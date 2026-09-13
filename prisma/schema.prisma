@@ -2,10 +2,10 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Local dev uses SQLite. For Vercel/production, switch provider to "postgresql"
-// and set DATABASE_URL (e.g. Neon / Vercel Postgres), then run `prisma migrate deploy`.
+// Production (Vercel): PostgreSQL via Neon / Supabase / Vercel Postgres.
+// Local: same Postgres URL, or temporarily set provider = "sqlite" + DATABASE_URL="file:./dev.db"
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

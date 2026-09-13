@@ -44,15 +44,27 @@ Platform owner (superadmin)
 
 ## Stack
 
-Next.js 16 · TypeScript · Tailwind CSS 4 · Prisma · SQLite (dev) / PostgreSQL (prod) · SimpleWebAuthn
+Next.js 16 · TypeScript · Tailwind CSS 4 · Prisma · **PostgreSQL** (Neon / Supabase / Vercel Postgres) · SimpleWebAuthn
 
-## Local development
+## Local development (PostgreSQL)
+
+1. Create a free database: [Neon](https://neon.tech) or Supabase.
+2. Copy env and fill values:
+
+```bash
+cp .env.example .env
+```
+
+```env
+SESSION_SECRET=<openssl rand -hex 32>
+APP_URL=http://localhost:3000
+DATABASE_URL="postgresql://USER:PASSWORD@HOST/DB?sslmode=require"
+```
 
 ```bash
 npm install
-cp .env.example .env   # set SESSION_SECRET
-npx prisma migrate dev
-npm run seed          # optional demo tenants
+npx prisma migrate deploy   # or: npm run db:migrate
+npm run seed                # optional demo tenants
 npm run dev
 ```
 
@@ -66,11 +78,41 @@ Demo logins after `npm run seed`:
 
 > Passkeys need `localhost` or HTTPS.
 
-## Deploy to Vercel
+## Deploy to Vercel (fixes empty DATABASE_URL)
 
-1. Postgres (Neon / Supabase / Vercel Postgres)
-2. Switch Prisma provider to `postgresql`, set `DATABASE_URL`, `SESSION_SECRET`, `APP_URL`
-3. Build script already runs `prisma migrate deploy`
+The build failed with **“DATABASE_URL resolved to an empty string”** because env vars were not set in Vercel (and the project previously pointed at SQLite).
+
+### 1. Create Postgres
+Use **Neon** (recommended), Supabase, or Vercel Postgres. Copy the connection string, e.g.:
+
+```
+postgresql://user:password@ep-xxx.aws.neon.tech/neondb?sslmode=require
+```
+
+### 2. Set Environment Variables (Vercel → Project → Settings → Environment Variables)
+
+| Name | Value |
+| --- | --- |
+| `DATABASE_URL` | Your Postgres URL (`sslmode=require`) |
+| `SESSION_SECRET` | `openssl rand -hex 32` |
+| `APP_URL` | `https://your-app.vercel.app` (exact production URL) |
+
+### 3. Redeploy
+`prisma/schema.prisma` is already `provider = "postgresql"`. Build runs:
+
+```bash
+prisma generate && prisma migrate deploy && next build
+```
+
+After first successful deploy, open the site and **sign up** (first account = platform superadmin), or run `npm run seed` against the same `DATABASE_URL` from your machine.
+
+### Common errors
+
+| Error | Fix |
+| --- | --- |
+| `DATABASE_URL resolved to an empty string` | Add `DATABASE_URL` in Vercel env, then redeploy |
+| `The URL must start with postgresql://` | Use a real Postgres URL, not `file:./dev.db` |
+| `_SSL` / certificate errors | Append `?sslmode=require` to the Neon/Supabase URL |
 
 ## Project layout
 
