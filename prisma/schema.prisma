@@ -1,0 +1,187 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Local dev uses SQLite. For Vercel/production, switch provider to "postgresql"
+// and set DATABASE_URL (e.g. Neon / Vercel Postgres), then run `prisma migrate deploy`.
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// One customer / project on the SaaS. The platform superadmin can see all orgs.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  /// "active" | "suspended"
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users      User[]
+  orgItems   OrgVaultItem[]
+  memberKeys OrgMemberKey[]
+
+  @@index([status])
+}
+
+/// Per-user RSA keypair for wrapping the shared org DEK (Bitwarden-style).
+model UserKeyPair {
+  userId            String   @id
+  publicKey         String // SPKI base64
+  encryptedPrivateKey String // AES-GCM(iv.ct) under user's personal KEK
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Shared org DEK, RSA-OAEP encrypted for each member's public key.
+model OrgMemberKey {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  /// RSA-OAEP ciphertext of the 32-byte org DEK
+  encryptedOrgKey String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+/// Shared vault items for an organization (encrypted with org DEK).
+model OrgVaultItem {
+  id             String       @id @default(cuid())
+  organizationId String
+  category       String       @default("other")
+  ciphertext     String
+  iv             String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, category])
+}
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+
+  /// Display name shown in the app (not secret).
+  displayName  String?
+  /// Avatar as a data URL (image/*), max ~200KB. Not secret.
+  avatar       String?
+
+  /// SaaS operator: can see every organization. "superadmin" | "user"
+  platformRole String  @default("user")
+
+  /// Role inside their organization. "owner" | "member" | null (platform-only accounts)
+  orgRole      String?
+
+  /// Legacy field kept in sync with orgRole for older checks:
+  /// org owner → "admin", org member → "member"
+  role         String  @default("member")
+
+  status       String  @default("active") // "active" | "revoked"
+  /// CSV of login categories this user may access, e.g. "work,personal"
+  /// Owners and platform superadmins always have every category.
+  allowedCategories String @default("personal")
+
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions        Session[]
+  vaultProfile    VaultProfile?
+  credentials     Credential[]
+  items           VaultItem[]
+  extensionTokens ExtensionToken[]
+  keyPair         UserKeyPair?
+  orgMemberKeys   OrgMemberKey[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userAgent String?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VaultProfile {
+  userId            String   @id
+  kdfSalt           String // base64
+  wrappedDek        String // base64(iv.ciphertext)
+  verifier          String // base64(iv.ciphertext)
+  wrappedDekPasskey String? // base64, wrapped with WebAuthn PRF-derived KEK
+  passkeyPrfSalt    String? // base64
+  kdfIterations     Int      @default(310000)
+  updatedAt         DateTime @updatedAt
+  createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Credential {
+  id           String   @id @default(cuid())
+  userId       String
+  credentialId String   @unique // base64url
+  publicKey    String // base64url
+  counter      Int      @default(0)
+  deviceName   String   @default("Passkey")
+  transports   String? // csv: usb,ble,internal,hybrid
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VaultItem {
+  id        String   @id @default(cuid())
+  userId    String
+  /// Login category label (plaintext so owners can enforce access).
+  /// Secrets always stay inside `ciphertext`.
+  category  String   @default("other")
+  ciphertext String // base64 AES-GCM payload of item JSON
+  iv        String // base64
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, category])
+}
+
+model ExtensionToken {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique // sha256 hex of raw token
+  label      String    @default("Browser extension")
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model WebAuthnChallenge {
+  id        String   @id @default(cuid())
+  userId    String? // null for usernameless login challenge
+  email     String?
+  challenge String   @unique
+  type      String // "registration" | "authentication"
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([challenge])
+}
