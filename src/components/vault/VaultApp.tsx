@@ -376,6 +376,14 @@ export function VaultApp() {
         </div>
       </aside>
 
+      {mobileNav && (
+        <div
+          className="backdrop md:hidden"
+          onClick={() => setMobileNav(false)}
+          aria-hidden
+        />
+      )}
+
       <div className="min-w-0 flex flex-col">
         <header
           className="sticky top-0 z-20 border-b hairline backdrop-blur"
