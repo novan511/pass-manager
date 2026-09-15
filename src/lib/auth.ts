@@ -152,3 +152,59 @@ export function rpId(): string {
 export function origin(): string {
   return process.env.APP_URL || "http://localhost:3000";
 }
+
+/** Actual request origin (handles Vercel proxies / www / custom domains). */
+export function requestOrigin(req: {
+  headers: { get(name: string): string | null };
+}): string {
+  const host =
+    req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
+    req.headers.get("host");
+  const proto =
+    req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    (host?.includes("localhost") ? "http" : "https");
+  if (host) return `${proto}://${host}`;
+  return origin();
+}
+
+export function requestRpId(req: {
+  headers: { get(name: string): string | null };
+}): string {
+  try {
+    return new URL(requestOrigin(req)).hostname;
+  } catch {
+    return rpId();
+  }
+}
+
+/** Accept APP_URL plus the live request origin (and www variant). */
+export function allowedOrigins(req: {
+  headers: { get(name: string): string | null };
+}): string[] {
+  const list = new Set<string>([origin(), requestOrigin(req)]);
+  const envHost = rpId();
+  if (envHost && envHost !== "localhost") {
+    list.add(`https://${envHost}`);
+    list.add(`https://www.${envHost}`);
+  }
+  const live = requestOrigin(req);
+  try {
+    const h = new URL(live).hostname;
+    if (h && h !== "localhost") {
+      list.add(`https://${h}`);
+      list.add(`https://www.${h}`);
+    }
+  } catch {
+    /* ignore */
+  }
+  return [...list];
+}
+
+export function expectedRpId(req: {
+  headers: { get(name: string): string | null };
+}): string {
+  // Prefer live host so iPhone Safari matches; fall back to APP_URL.
+  const live = requestRpId(req);
+  if (live && live !== "localhost") return live;
+  return rpId();
+}

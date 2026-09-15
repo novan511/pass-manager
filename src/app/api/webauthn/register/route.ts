@@ -1,24 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/auth";
+import {
+  requireUser,
+  allowedOrigins,
+  expectedRpId,
+} from "@/lib/auth";
 import { handleApiError } from "@/lib/api";
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
-import { rpId, origin } from "@/lib/auth";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
     const user = await requireUser();
+    const rpID = expectedRpId(req);
 
     const existing = await prisma.credential.findMany({ where: { userId: user.id } });
     const options = await generateRegistrationOptions({
       rpName: "Keyring Vault",
-      rpID: rpId(),
+      rpID,
       userName: user.email,
       userID: new TextEncoder().encode(user.id),
       attestationType: "none",
@@ -30,11 +34,9 @@ export async function POST(_req: NextRequest) {
         residentKey: "preferred",
         userVerification: "preferred",
       },
-      // Ask the authenticator for PRF (hmac-secret) so passkeys can unlock the vault.
       extensions: { credProps: true, prf: {} },
     });
 
-    // Store challenge; also generate PRF salt for this enrollment.
     const challenge = options.challenge;
     await prisma.webAuthnChallenge.create({
       data: {
@@ -47,9 +49,6 @@ export async function POST(_req: NextRequest) {
     });
 
     const prfSalt = crypto.getRandomValues(new Uint8Array(32));
-    // Encode salt into challenge metadata via separate cookie-less approach:
-    // stash in challenge table email field? Better: return salt to client and
-    // re-send it at verification time (salt is not secret by itself; PRF output is).
     return NextResponse.json({
       options,
       prfSaltB64: btoa(String.fromCharCode(...prfSalt)),
@@ -85,8 +84,8 @@ export async function PUT(req: NextRequest) {
     const verification = await verifyRegistrationResponse({
       response: body.response,
       expectedChallenge: record.challenge,
-      expectedOrigin: origin(),
-      expectedRPID: rpId(),
+      expectedOrigin: allowedOrigins(req),
+      expectedRPID: expectedRpId(req),
       requireUserVerification: false,
     });
 

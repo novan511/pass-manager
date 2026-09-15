@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { getSessionUser, rpId, origin, createSession } from "@/lib/auth";
+import {
+  getSessionUser,
+  createSession,
+  allowedOrigins,
+  expectedRpId,
+} from "@/lib/auth";
 import { handleApiError } from "@/lib/api";
 import {
   generateAuthenticationOptions,
@@ -45,10 +50,16 @@ export async function POST(req: NextRequest) {
 
     const credentials = await prisma.credential.findMany({ where: { userId } });
     if (credentials.length === 0) {
-      return NextResponse.json({ error: "No passkeys registered." }, { status: 404 });
+      return NextResponse.json(
+        {
+          error:
+            "No passkey for this account yet. Sign in with email + password, then add a passkey in Settings.",
+        },
+        { status: 404 },
+      );
     }
 
-    // PRF results are only returned when `eval` is supplied at assertion time.
+    const rpID = expectedRpId(req);
     const prfExt = body.prfSaltB64
       ? {
           prf: {
@@ -60,8 +71,9 @@ export async function POST(req: NextRequest) {
       : { prf: {} };
 
     const options = await generateAuthenticationOptions({
-      rpID: rpId(),
+      rpID,
       userVerification: "preferred",
+      // Empty allowCredentials lets iOS/iCloud find synced passkeys (discoverable).
       allowCredentials: credentials.map((c) => ({
         id: c.credentialId,
         transports: (c.transports?.split(",").filter(Boolean) ?? []) as AuthenticatorTransport[],
@@ -112,8 +124,8 @@ export async function PUT(req: NextRequest) {
     const verification = await verifyAuthenticationResponse({
       response: body.response,
       expectedChallenge: record.challenge,
-      expectedOrigin: origin(),
-      expectedRPID: rpId(),
+      expectedOrigin: allowedOrigins(req),
+      expectedRPID: expectedRpId(req),
       requireUserVerification: false,
       credential: {
         id: cred.credentialId,
@@ -138,7 +150,6 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Your access has been revoked." }, { status: 403 });
     }
 
-    // Establish a web session so the user stays signed in after passkey login.
     await createSession(account.id, req.headers.get("user-agent") ?? undefined);
 
     return NextResponse.json({

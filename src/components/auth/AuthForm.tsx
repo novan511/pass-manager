@@ -45,18 +45,25 @@ export function AuthForm({ mode }: { mode: Mode }) {
         "@simplewebauthn/browser"
       );
       if (!browserSupportsPasskeys()) {
-        throw new Error("This browser does not support passkeys.");
+        throw new Error(
+          "Passkeys need Safari 16+ on iPhone (HTTPS). Or sign in with email + password.",
+        );
       }
+      if (!email.trim()) {
+        throw new Error("Enter your email first, then tap the passkey button.");
+      }
+
       const optRes = await fetch("/api/webauthn/authenticate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(email ? { email } : {}),
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
       });
       const optData = await optRes.json();
       if (!optRes.ok) throw new Error(optData.error || "Could not start passkey login.");
 
       const assertion = await startAuthentication({
         optionsJSON: optData.options,
+        useBrowserAutofill: false,
       });
 
       const verifyRes = await fetch("/api/webauthn/authenticate", {
@@ -67,12 +74,24 @@ export function AuthForm({ mode }: { mode: Mode }) {
       const verifyData = await verifyRes.json();
       if (!verifyRes.ok) throw new Error(verifyData.error || "Passkey login failed.");
 
-      // Session cookie is set by the verify endpoint. The vault page will offer
-      // passkey unlock (PRF) when a passkey wrap exists.
       router.push("/vault?passkey=1");
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Passkey login failed.");
+      const name = (err as { name?: string })?.name || "";
+      const msg = err instanceof Error ? err.message : "Passkey login failed.";
+      if (name === "NotAllowedError") {
+        setError(
+          "Passkey was cancelled or timed out. Try again, or use email + password.",
+        );
+      } else if (name === "AbortError") {
+        setError("Passkey prompt was dismissed. Try again.");
+      } else if (msg.includes("NotAllowed") || msg.includes("not allowed")) {
+        setError(
+          "This device refused the passkey. On iPhone: Settings → Face ID & Passcodes, and use Safari on the same HTTPS domain where you registered it.",
+        );
+      } else {
+        setError(msg);
+      }
     } finally {
       setPasskeyBusy(false);
     }
