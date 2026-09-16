@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { KeyRound, Loader2, Eye, EyeOff } from "lucide-react";
@@ -9,6 +9,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 function ResetForm() {
   const params = useSearchParams();
   const router = useRouter();
+  const code = params.get("code");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);
@@ -16,28 +17,81 @@ function ResetForm() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
   const [ready, setReady] = useState(false);
+  const [status, setStatus] = useState("Checking reset link…");
 
-  // Supabase recovery link puts tokens in the URL hash / query.
+  const finishSession = useCallback(() => {
+    setReady(true);
+    setStatus("");
+  }, []);
+
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    let cancelled = false;
+
+    async function boot() {
+      // 1) Already signed in via recovery (hash tokens handled by client).
+      const { data: { session } } = await supabase.auth.getSession();
       if (session) {
-        setReady(true);
+        if (!cancelled) finishSession();
         return;
       }
-      // Exchange recovery tokens from the URL if present.
-      const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(
-        window.location.href,
-      );
-      if (exchangeErr) {
-        // Hash-based PKCE flow (older links)
-        setError(
-          "This reset link is invalid or expired. Request a new one from Forgot password.",
+
+      // 2) PKCE ?code=... exchange (modern Supabase default).
+      const urlCode = code || new URLSearchParams(window.location.search).get("code");
+      if (urlCode) {
+        setStatus("Activating recovery session…");
+        const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(
+          window.location.href,
         );
+        if (exchangeErr) {
+          console.error("exchangeCodeForSession", exchangeErr);
+          if (!cancelled) {
+            setError(
+              "This reset link is invalid or expired. Request a new one. " +
+                "(If you opened it on a different device/domain, open it on the same browser.)",
+            );
+            setReady(true);
+          }
+          return;
+        }
+      } else {
+        // 3) Implicit hash: #access_token=...&type=recovery — wait briefly for client to parse.
+        setStatus("Waiting for recovery token…");
+        await new Promise((r) => setTimeout(r, 400));
+        const { data: { session: afterHash } } = await supabase.auth.getSession();
+        if (!afterHash) {
+          if (!cancelled) {
+            setError(
+              "No valid reset session. Open the latest email link again, or request a new one.",
+            );
+            setReady(true);
+          }
+          return;
+        }
       }
-      setReady(true);
+
+      const { data: { session: finalSession } } = await supabase.auth.getSession();
+      if (!cancelled) {
+        if (finalSession) finishSession();
+        else {
+          setError("Could not start recovery session. Request a new reset link.");
+          setReady(true);
+        }
+      }
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") {
+        finishSession();
+      }
     });
-  }, []);
+
+    boot();
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, [code, finishSession]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -49,12 +103,16 @@ function ResetForm() {
     setBusy(true);
     try {
       const supabase = createSupabaseBrowserClient();
-      const { error: updateErr } = await supabase.auth.updateUser({
+      const { data, error: updateErr } = await supabase.auth.updateUser({
         password,
       });
       if (updateErr) throw new Error(updateErr.message);
+      if (!data.user) throw new Error("No recovery session. Open the email link again.");
+
+      // Sign out recovery session so next login uses the new password cleanly.
+      await supabase.auth.signOut();
       setOk(true);
-      setTimeout(() => router.push("/login"), 1500);
+      setTimeout(() => router.push("/login"), 1200);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reset failed.");
     } finally {
@@ -86,8 +144,9 @@ function ResetForm() {
           </div>
 
           {!ready ? (
-            <div className="flex justify-center py-6">
+            <div className="flex flex-col items-center gap-3 py-6">
               <Loader2 className="animate-spin" size={20} style={{ color: "var(--muted)" }} />
+              <p className="text-xs" style={{ color: "var(--faint)" }}>{status}</p>
             </div>
           ) : ok ? (
             <p className="text-sm" style={{ color: "var(--ok)" }}>
@@ -132,7 +191,11 @@ function ResetForm() {
                 />
               </div>
               {error && (
-                <p className="text-sm rounded-lg px-3 py-2" style={{ color: "var(--danger)", background: "var(--danger-soft)" }} role="alert">
+                <p
+                  className="text-sm rounded-lg px-3 py-2"
+                  style={{ color: "var(--danger)", background: "var(--danger-soft)" }}
+                  role="alert"
+                >
                   {error}
                 </p>
               )}
@@ -141,6 +204,14 @@ function ResetForm() {
                 Update password
               </button>
             </form>
+          )}
+
+          {error && !ready && (
+            <p className="text-sm text-center" style={{ color: "var(--muted)" }}>
+              <Link href="/forgot-password" style={{ color: "var(--accent)" }}>
+                Request a new reset link
+              </Link>
+            </p>
           )}
         </div>
       </div>

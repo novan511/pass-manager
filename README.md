@@ -1,6 +1,8 @@
 # Keyring — Zero-Knowledge Password Manager (SaaS)
 
-A multi-tenant, end-to-end encrypted password manager for Vercel. Like Telegram for secrets: the **platform owner cannot read anyone’s passwords**. Encryption and decryption happen only in the browser.
+A multi-tenant, end-to-end encrypted password manager. **One Supabase project** for Auth + Postgres. Vault secrets stay encrypted on-device (zero-knowledge) — same crypto as before.
+
+**Setup:** see [SUPABASE.md](./SUPABASE.md).
 
 ## Zero-knowledge guarantee
 

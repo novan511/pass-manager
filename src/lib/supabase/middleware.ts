@@ -33,19 +33,13 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const isAuthPage = path === "/login" || path === "/signup" || path === "/forgot-password" || path === "/reset-password";
-  const isPublic =
-    path === "/" || path.startsWith("/api/auth") || path.startsWith("/_next") || path.includes(".");
 
-  if (!user && path === "/vault" && !isPublic) {
+  // Only force login for the vault app. Leave auth/reset pages alone
+  // so Supabase recovery links can finish exchanging tokens.
+  if (!user && path === "/vault") {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    return NextResponse.redirect(url);
-  }
-
-  if (user && (path === "/login" || path === "/signup") && !isAuthPage) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/vault";
+    url.search = "";
     return NextResponse.redirect(url);
   }
 
