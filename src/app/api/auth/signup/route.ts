@@ -13,6 +13,25 @@ const schema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    if (!process.env.DATABASE_URL) {
+      return NextResponse.json(
+        {
+          error:
+            "DATABASE_URL is not set on the server. Copy Supabase → Settings → Database → Pooler URI into Vercel env DATABASE_URL, then redeploy.",
+        },
+        { status: 500 },
+      );
+    }
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json(
+        {
+          error:
+            "Supabase Auth env is incomplete. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+        },
+        { status: 500 },
+      );
+    }
+
     const body = schema.parse(await req.json());
     const email = body.email.trim().toLowerCase();
 
@@ -29,10 +48,11 @@ export async function POST(req: NextRequest) {
       body.organizationName?.trim() ||
       `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
 
-    let slug = orgName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "org";
+    let slug =
+      orgName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "org";
     if (await prisma.organization.findUnique({ where: { slug } })) {
       slug = `${slug}-${Date.now().toString(36)}`;
     }
@@ -41,7 +61,6 @@ export async function POST(req: NextRequest) {
       data: { name: orgName.trim(), slug },
     });
 
-    // Create auth user in Supabase (email_confirmed so user can log in immediately).
     const admin = createSupabaseAdminClient();
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
       email,
@@ -69,7 +88,6 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Sign the user in (sets Supabase session cookies).
     const supabase = await createSupabaseServerClient();
     const { error: signInErr } = await supabase.auth.signInWithPassword({
       email,
@@ -94,6 +112,7 @@ export async function POST(req: NextRequest) {
       isFirstUser,
     });
   } catch (err) {
+    console.error("signup", err);
     return handleApiError(err);
   }
 }
