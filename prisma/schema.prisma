@@ -68,9 +68,13 @@ model OrgVaultItem {
 }
 
 model User {
+  /// Local cuid — not Supabase's id
   id           String  @id @default(cuid())
+  /// auth.users.id from Supabase Auth
+  supabaseId   String? @unique
   email        String  @unique
-  passwordHash String
+  /// Optional legacy hash; primary auth is Supabase Auth
+  passwordHash String?
 
   /// Display name shown in the app (not secret).
   displayName  String?
@@ -105,6 +109,7 @@ model User {
   extensionTokens ExtensionToken[]
   keyPair         UserKeyPair?
   orgMemberKeys   OrgMemberKey[]
+  passwordResets  PasswordReset[]
 }
 
 model Session {
@@ -184,4 +189,17 @@ model WebAuthnChallenge {
   createdAt DateTime @default(now())
 
   @@index([challenge])
+}
+
+/// One-time token to reset the *account* login password (not the vault master password).
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique // sha256 of raw token
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

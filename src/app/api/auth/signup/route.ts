@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { createSession, hashPassword } from "@/lib/auth";
+import { createSupabaseServerClient, createSupabaseAdminClient } from "@/lib/supabase/server";
 import { handleApiError } from "@/lib/api";
 import { ALL_CATEGORIES_CSV } from "@/lib/categories";
 
@@ -10,14 +10,6 @@ const schema = z.object({
   password: z.string().min(10, "Password must be at least 10 characters.").max(256),
   organizationName: z.string().min(2).max(80).optional(),
 });
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "org";
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,22 +27,39 @@ export async function POST(req: NextRequest) {
     const isFirstUser = (await prisma.user.count()) === 0;
     const orgName =
       body.organizationName?.trim() ||
-      email.split("@")[0].replace(/[._]+/g, " ") +
-        (isFirstUser ? "" : "'s vault");
+      `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
 
-    let slug = slugify(orgName);
+    let slug = orgName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "org";
     if (await prisma.organization.findUnique({ where: { slug } })) {
       slug = `${slug}-${Date.now().toString(36)}`;
     }
 
     const org = await prisma.organization.create({
-      data: { name: orgName.trim() || "My vault", slug },
+      data: { name: orgName.trim(), slug },
     });
+
+    // Create auth user in Supabase (email_confirmed so user can log in immediately).
+    const admin = createSupabaseAdminClient();
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
+      email,
+      password: body.password,
+      email_confirm: true,
+    });
+    if (createErr || !created.user) {
+      await prisma.organization.delete({ where: { id: org.id } }).catch(() => {});
+      return NextResponse.json(
+        { error: createErr?.message || "Could not create Supabase auth user." },
+        { status: 400 },
+      );
+    }
 
     const user = await prisma.user.create({
       data: {
+        supabaseId: created.user.id,
         email,
-        passwordHash: hashPassword(body.password),
         platformRole: isFirstUser ? "superadmin" : "user",
         orgRole: "owner",
         role: "admin",
@@ -60,7 +69,19 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    await createSession(user.id, req.headers.get("user-agent") ?? undefined);
+    // Sign the user in (sets Supabase session cookies).
+    const supabase = await createSupabaseServerClient();
+    const { error: signInErr } = await supabase.auth.signInWithPassword({
+      email,
+      password: body.password,
+    });
+    if (signInErr) {
+      return NextResponse.json(
+        { error: `Account created but sign-in failed: ${signInErr.message}` },
+        { status: 400 },
+      );
+    }
+
     return NextResponse.json({
       user: {
         id: user.id,

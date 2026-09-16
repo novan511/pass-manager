@@ -182,6 +182,11 @@ export function AuthForm({ mode }: { mode: Mode }) {
             )}
             Continue with passkey
           </button>
+          <p className="text-xs text-center" style={{ color: "var(--faint)" }}>
+            <Link href="/forgot-password" style={{ color: "var(--muted)" }} className="underline underline-offset-2">
+              Forgot sign-in password?
+            </Link>
+          </p>
         </>
       )}
 

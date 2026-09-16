@@ -1,9 +1,7 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
-
-const COOKIE_NAME = "keyring_session";
-const SESSION_DAYS = 30;
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { User as PrismaUser } from "@prisma/client";
 
 function secret(): string {
   const s = process.env.SESSION_SECRET;
@@ -14,10 +12,6 @@ function secret(): string {
     return "dev-only-session-secret-change-me";
   }
   return s;
-}
-
-function sign(value: string): string {
-  return createHmac("sha256", secret()).update(value).digest("hex");
 }
 
 export function hashPassword(password: string): string {
@@ -36,62 +30,82 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 
 export function sha256Hex(input: string): string {
-  return createHmac("sha256", "").update(input).digest("hex");
+  return createHmac("sha256", secret()).update(input).digest("hex");
 }
 
 export function randomToken(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");
 }
 
-export async function createSession(userId: string, userAgent?: string) {
-  const id = randomToken(24);
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000);
-  await prisma.session.create({
-    data: { id, userId, expiresAt, userAgent: userAgent?.slice(0, 255) },
-  });
-  const payload = `${id}.${expiresAt.getTime()}`;
-  const cookieStore = await cookies();
-  cookieStore.set(COOKIE_NAME, `${payload}.${sign(payload)}`, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    expires: expiresAt,
-  });
-  return id;
+/** Supabase Auth owns sessions. Kept for API shape compatibility. */
+export async function createSession(_userId: string, _userAgent?: string) {
+  return "supabase";
 }
 
 export async function destroySession() {
-  const cookieStore = await cookies();
-  const raw = cookieStore.get(COOKIE_NAME)?.value;
-  if (raw) {
-    const sessionId = raw.split(".")[0];
-    await prisma.session.deleteMany({ where: { id: sessionId } }).catch(() => {});
-  }
-  cookieStore.delete(COOKIE_NAME);
+  const supabase = await createSupabaseServerClient();
+  await supabase.auth.signOut();
 }
 
-export async function getSessionUser() {
-  const cookieStore = await cookies();
-  const raw = cookieStore.get(COOKIE_NAME)?.value;
-  if (!raw) return null;
-  const parts = raw.split(".");
-  if (parts.length !== 3) return null;
-  const [sessionId, expStr, sig] = parts;
-  const payload = `${sessionId}.${expStr}`;
-  const expected = sign(payload);
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  if (Number(expStr) < Date.now()) return null;
+/**
+ * Supabase Auth session → Prisma User (auto-link / auto-create org owner row).
+ */
+export async function getSessionUser(): Promise<PrismaUser | null> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user: sbUser },
+  } = await supabase.auth.getUser();
+  if (!sbUser?.id || !sbUser.email) return null;
 
-  const session = await prisma.session.findUnique({
-    where: { id: sessionId },
-    include: { user: true },
-  });
-  if (!session || session.expiresAt < new Date()) return null;
-  if (session.user.status !== "active") return null;
-  return session.user;
+  const email = sbUser.email.toLowerCase();
+  let dbUser = await prisma.user.findUnique({ where: { supabaseId: sbUser.id } });
+
+  if (!dbUser) {
+    const byEmail = await prisma.user.findUnique({ where: { email } });
+    if (byEmail) {
+      dbUser = await prisma.user.update({
+        where: { id: byEmail.id },
+        data: { supabaseId: sbUser.id },
+      });
+    } else {
+      const count = await prisma.user.count();
+      const orgName = `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
+      let slug =
+        orgName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "org";
+      if (await prisma.organization.findUnique({ where: { slug } })) {
+        slug = `${slug}-${Date.now().toString(36)}`;
+      }
+      const org = await prisma.organization.create({
+        data: { name: orgName, slug },
+      });
+      dbUser = await prisma.user.create({
+        data: {
+          supabaseId: sbUser.id,
+          email,
+          platformRole: count === 0 ? "superadmin" : "user",
+          orgRole: "owner",
+          role: "admin",
+          status: "active",
+          allowedCategories: "work,personal,finance,social,other",
+          organizationId: org.id,
+        },
+      });
+    }
+  }
+
+  if (dbUser.status !== "active") return null;
+
+  if (dbUser.organizationId) {
+    const org = await prisma.organization.findUnique({
+      where: { id: dbUser.organizationId },
+    });
+    if (org && org.status === "suspended") return null;
+  }
+
+  return dbUser;
 }
 
 export async function requireUser() {
@@ -203,7 +217,6 @@ export function allowedOrigins(req: {
 export function expectedRpId(req: {
   headers: { get(name: string): string | null };
 }): string {
-  // Prefer live host so iPhone Safari matches; fall back to APP_URL.
   const live = requestRpId(req);
   if (live && live !== "localhost") return live;
   return rpId();

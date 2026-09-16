@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
-import { createSession, verifyPassword } from "@/lib/auth";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getSessionUser } from "@/lib/auth";
 import { handleApiError } from "@/lib/api";
 
 const schema = z.object({
@@ -13,26 +13,29 @@ export async function POST(req: NextRequest) {
   try {
     const body = schema.parse(await req.json());
     const email = body.email.trim().toLowerCase();
-    const user = await prisma.user.findUnique({
-      where: { email },
-      include: { organization: true },
+
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password: body.password,
     });
-    if (!user || !verifyPassword(body.password, user.passwordHash)) {
-      return NextResponse.json({ error: "Email or password is incorrect." }, { status: 401 });
-    }
-    if (user.status !== "active") {
+    if (error || !data.user) {
       return NextResponse.json(
-        { error: "Your access has been revoked. Contact the project owner." },
+        { error: "Email or password is incorrect." },
+        { status: 401 },
+      );
+    }
+
+    // Link / load Prisma profile (also enforces status + org suspended).
+    const user = await getSessionUser();
+    if (!user) {
+      await supabase.auth.signOut();
+      return NextResponse.json(
+        { error: "Your access has been revoked or this project is suspended." },
         { status: 403 },
       );
     }
-    if (user.organization && user.organization.status === "suspended") {
-      return NextResponse.json(
-        { error: "This project is suspended. Contact the platform owner." },
-        { status: 403 },
-      );
-    }
-    await createSession(user.id, req.headers.get("user-agent") ?? undefined);
+
     return NextResponse.json({
       user: {
         id: user.id,
@@ -40,9 +43,6 @@ export async function POST(req: NextRequest) {
         role: user.role,
         orgRole: user.orgRole,
         platformRole: user.platformRole,
-        organization: user.organization
-          ? { id: user.organization.id, name: user.organization.name, slug: user.organization.slug }
-          : null,
       },
     });
   } catch (err) {

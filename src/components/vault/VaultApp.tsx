@@ -1782,6 +1782,31 @@ function OrgPanel({
                       Share vault
                     </button>
                   )}
+                  {u.platformRole !== "superadmin" && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={async () => {
+                        if (!confirm(`Reset sign-in password for ${u.email}? They stay signed out.`)) return;
+                        const res = await fetch("/api/admin/reset-password", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ userId: u.id }),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) {
+                          toast(data.error || "Reset failed");
+                          return;
+                        }
+                        toast(`Temp password: ${data.temporaryPassword}`);
+                        alert(
+                          `Temporary sign-in password for ${data.email}:\n\n${data.temporaryPassword}\n\nCopy it now — shown once. Share out-of-band. Does not change vault master password.`,
+                        );
+                      }}
+                    >
+                      Reset password
+                    </button>
+                  )}
                   {(() => {
                     const mk = memberKeys.find((m) => m.id === u.id);
                     if (!mk) return null;
