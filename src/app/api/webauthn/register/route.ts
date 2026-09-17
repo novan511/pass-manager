@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import {
   requireUser,
   allowedOrigins,
   expectedRpId,
+  createSession,
 } from "@/lib/auth";
+import { db, newId, nowIso, findUserById } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import {
   generateRegistrationOptions,
@@ -19,15 +20,19 @@ export async function POST(req: NextRequest) {
     const user = await requireUser();
     const rpID = expectedRpId(req);
 
-    const existing = await prisma.credential.findMany({ where: { userId: user.id } });
+    const { data: existing } = await db()
+      .from("credentials")
+      .select("*")
+      .eq("user_id", user.id);
+
     const options = await generateRegistrationOptions({
       rpName: "Keyring Vault",
       rpID,
       userName: user.email,
       userID: new TextEncoder().encode(user.id),
       attestationType: "none",
-      excludeCredentials: existing.map((c) => ({
-        id: c.credentialId,
+      excludeCredentials: (existing ?? []).map((c) => ({
+        id: c.credential_id,
         transports: (c.transports?.split(",").filter(Boolean) ?? []) as AuthenticatorTransport[],
       })),
       authenticatorSelection: {
@@ -37,15 +42,14 @@ export async function POST(req: NextRequest) {
       extensions: { credProps: true, prf: {} },
     });
 
-    const challenge = options.challenge;
-    await prisma.webAuthnChallenge.create({
-      data: {
-        userId: user.id,
-        email: user.email,
-        challenge,
-        type: "registration",
-        expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
-      },
+    await db().from("webauthn_challenges").insert({
+      id: newId(),
+      user_id: user.id,
+      email: user.email,
+      challenge: options.challenge,
+      type: "registration",
+      expires_at: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString(),
+      created_at: nowIso(),
     });
 
     const prfSalt = crypto.getRandomValues(new Uint8Array(32));
@@ -69,14 +73,14 @@ export async function PUT(req: NextRequest) {
     const user = await requireUser();
     const body = verifySchema.parse(await req.json());
 
-    const record = await prisma.webAuthnChallenge.findFirst({
-      where: {
-        challenge: body.response?.challenge,
-        userId: user.id,
-        type: "registration",
-        expiresAt: { gte: new Date() },
-      },
-    });
+    const { data: record } = await db()
+      .from("webauthn_challenges")
+      .select("*")
+      .eq("challenge", body.response?.challenge)
+      .eq("user_id", user.id)
+      .eq("type", "registration")
+      .gte("expires_at", nowIso())
+      .maybeSingle();
     if (!record) {
       return NextResponse.json({ error: "Challenge expired. Try again." }, { status: 400 });
     }
@@ -93,29 +97,23 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Passkey registration failed." }, { status: 400 });
     }
 
-    const { credential, credentialDeviceType, credentialBackedUp } =
-      verification.registrationInfo;
-
-    await prisma.credential.create({
-      data: {
-        userId: user.id,
-        credentialId: credential.id,
-        publicKey: Buffer.from(credential.publicKey).toString("base64url"),
-        counter: credential.counter,
-        deviceName: body.deviceName?.trim() || "Passkey",
-        transports: (credential.transports ?? []).join(","),
-      },
+    const { credential } = verification.registrationInfo;
+    await db().from("credentials").insert({
+      id: newId(),
+      user_id: user.id,
+      credential_id: credential.id,
+      public_key: Buffer.from(credential.publicKey).toString("base64url"),
+      counter: credential.counter,
+      device_name: body.deviceName?.trim() || "Passkey",
+      transports: (credential.transports ?? []).join(","),
+      created_at: nowIso(),
     });
 
-    await prisma.webAuthnChallenge.delete({ where: { id: record.id } }).catch(() => {});
+    await db().from("webauthn_challenges").delete().eq("id", record.id);
 
-    // PRF results, if the authenticator supports them, come back client-side.
-    // The client will wrap the DEK and PUT /api/vault/profile.
     return NextResponse.json({
       verified: true,
       credentialId: credential.id,
-      deviceType: credentialDeviceType,
-      backedUp: credentialBackedUp,
     });
   } catch (err) {
     return handleApiError(err);
@@ -125,12 +123,20 @@ export async function PUT(req: NextRequest) {
 export async function GET() {
   try {
     const user = await requireUser();
-    const creds = await prisma.credential.findMany({
-      where: { userId: user.id },
-      select: { id: true, credentialId: true, deviceName: true, createdAt: true, transports: true },
-      orderBy: { createdAt: "desc" },
+    const { data: creds } = await db()
+      .from("credentials")
+      .select("id, credential_id, device_name, created_at, transports")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+    return NextResponse.json({
+      passkeys: (creds ?? []).map((c) => ({
+        id: c.id,
+        credentialId: c.credential_id,
+        deviceName: c.device_name,
+        createdAt: c.created_at,
+        transports: c.transports,
+      })),
     });
-    return NextResponse.json({ passkeys: creds });
   } catch (err) {
     return handleApiError(err);
   }

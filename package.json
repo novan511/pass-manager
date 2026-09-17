@@ -4,17 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && node scripts/require-db-url.mjs && prisma migrate deploy && next build",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "prisma generate",
+    "postinstall": "echo skip-prisma",
     "seed": "node scripts/seed.mjs",
-    "db:push": "prisma db push",
-    "db:migrate": "prisma migrate deploy",
     "supabase:check": "node scripts/check-supabase.mjs"
   },
   "dependencies": {
-    "@prisma/client": "6.19.2",
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.1",
     "@supabase/ssr": "^0.12.7",
@@ -32,7 +29,6 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
-    "prisma": "6.19.2",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

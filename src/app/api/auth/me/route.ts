@@ -1,43 +1,45 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { db, findOrgById } from "@/lib/supabase/db";
 import { effectiveCategories } from "@/lib/categories";
 
 export async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ user: null });
 
-  const [profile, passkeys, org] = await Promise.all([
-    prisma.vaultProfile.findUnique({
-      where: { userId: user.id },
-      select: { userId: true, createdAt: true },
-    }),
-    prisma.credential.count({ where: { userId: user.id } }),
-    user.organizationId
-      ? prisma.organization.findUnique({
-          where: { id: user.organizationId },
-          select: { id: true, name: true, slug: true, status: true },
-        })
-      : Promise.resolve(null),
+  const [{ count: passkeyCount }, { data: profile }] = await Promise.all([
+    db()
+      .from("credentials")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id),
+    db()
+      .from("vault_profiles")
+      .select("user_id")
+      .eq("user_id", user.id)
+      .maybeSingle(),
   ]);
+
+  const org = user.organization_id ? await findOrgById(user.organization_id) : null;
 
   return NextResponse.json({
     user: {
       id: user.id,
       email: user.email,
-      displayName: user.displayName,
+      displayName: user.display_name,
       avatar: user.avatar,
       role: user.role,
-      orgRole: user.orgRole,
-      platformRole: user.platformRole,
-      organizationId: user.organizationId,
-      organization: org,
-      allowedCategories: effectiveCategories(user.role, user.allowedCategories, {
-        orgRole: user.orgRole,
-        platformRole: user.platformRole,
+      orgRole: user.org_role,
+      platformRole: user.platform_role,
+      organizationId: user.organization_id,
+      organization: org
+        ? { id: org.id, name: org.name, slug: org.slug, status: org.status }
+        : null,
+      allowedCategories: effectiveCategories(user.role, user.allowed_categories, {
+        orgRole: user.org_role,
+        platformRole: user.platform_role,
       }),
     },
     hasVault: !!profile,
-    passkeyCount: passkeys,
+    passkeyCount: passkeyCount ?? 0,
   });
 }

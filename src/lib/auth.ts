@@ -1,7 +1,6 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { prisma } from "@/lib/prisma";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { User as PrismaUser } from "@prisma/client";
+import { ensureAppUser, type UserRow } from "@/lib/supabase/db";
 
 function secret(): string {
   const s = process.env.SESSION_SECRET;
@@ -37,7 +36,6 @@ export function randomToken(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");
 }
 
-/** Supabase Auth owns sessions. Kept for API shape compatibility. */
 export async function createSession(_userId: string, _userAgent?: string) {
   return "supabase";
 }
@@ -47,65 +45,14 @@ export async function destroySession() {
   await supabase.auth.signOut();
 }
 
-/**
- * Supabase Auth session → Prisma User (auto-link / auto-create org owner row).
- */
-export async function getSessionUser(): Promise<PrismaUser | null> {
+/** Supabase Auth session → app users row (auto-link / create). */
+export async function getSessionUser(): Promise<UserRow | null> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user: sbUser },
   } = await supabase.auth.getUser();
   if (!sbUser?.id || !sbUser.email) return null;
-
-  const email = sbUser.email.toLowerCase();
-  let dbUser = await prisma.user.findUnique({ where: { supabaseId: sbUser.id } });
-
-  if (!dbUser) {
-    const byEmail = await prisma.user.findUnique({ where: { email } });
-    if (byEmail) {
-      dbUser = await prisma.user.update({
-        where: { id: byEmail.id },
-        data: { supabaseId: sbUser.id },
-      });
-    } else {
-      const count = await prisma.user.count();
-      const orgName = `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
-      let slug =
-        orgName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-+|-+$/g, "") || "org";
-      if (await prisma.organization.findUnique({ where: { slug } })) {
-        slug = `${slug}-${Date.now().toString(36)}`;
-      }
-      const org = await prisma.organization.create({
-        data: { name: orgName, slug },
-      });
-      dbUser = await prisma.user.create({
-        data: {
-          supabaseId: sbUser.id,
-          email,
-          platformRole: count === 0 ? "superadmin" : "user",
-          orgRole: "owner",
-          role: "admin",
-          status: "active",
-          allowedCategories: "work,personal,finance,social,other",
-          organizationId: org.id,
-        },
-      });
-    }
-  }
-
-  if (dbUser.status !== "active") return null;
-
-  if (dbUser.organizationId) {
-    const org = await prisma.organization.findUnique({
-      where: { id: dbUser.organizationId },
-    });
-    if (org && org.status === "suspended") return null;
-  }
-
-  return dbUser;
+  return ensureAppUser(sbUser);
 }
 
 export async function requireUser() {
@@ -114,36 +61,38 @@ export async function requireUser() {
   return user;
 }
 
-/** Org owner (project master) or platform superadmin. */
 export async function requireOrgAdmin() {
   const user = await requireUser();
-  const isOwner = user.orgRole === "owner" || user.role === "admin";
-  const isPlatform = user.platformRole === "superadmin";
+  const isOwner = user.org_role === "owner" || user.role === "admin";
+  const isPlatform = user.platform_role === "superadmin";
   if (!isOwner && !isPlatform) {
     throw new AuthError(403, "Organization owner access required.");
   }
   return user;
 }
 
-/** SaaS platform operator only. Sees metadata — never vault secrets. */
 export async function requireSuperadmin() {
   const user = await requireUser();
-  if (user.platformRole !== "superadmin") {
+  if (user.platform_role !== "superadmin") {
     throw new AuthError(403, "Platform owner access required.");
   }
   return user;
 }
 
 export function isOrgOwner(user: {
-  orgRole?: string | null;
+  org_role?: string | null;
   role: string;
-  platformRole: string;
+  platform_role: string;
 }): boolean {
-  return user.orgRole === "owner" || user.role === "admin" || user.platformRole === "superadmin";
+  return (
+    user.org_role === "owner" ||
+    user.role === "admin" ||
+    user.platform_role === "superadmin"
+  );
 }
 
-export function isSuperadmin(user: { platformRole: string }): boolean {
-  return user.platformRole === "superadmin";
+export function isSuperadmin(user: { platform_role: string }): boolean {
+  return user.platform_role === "superadmin";
 }
 
 export class AuthError extends Error {
@@ -167,7 +116,6 @@ export function origin(): string {
   return process.env.APP_URL || "http://localhost:3000";
 }
 
-/** Actual request origin (handles Vercel proxies / www / custom domains). */
 export function requestOrigin(req: {
   headers: { get(name: string): string | null };
 }): string {
@@ -191,7 +139,6 @@ export function requestRpId(req: {
   }
 }
 
-/** Accept APP_URL plus the live request origin (and www variant). */
 export function allowedOrigins(req: {
   headers: { get(name: string): string | null };
 }): string[] {

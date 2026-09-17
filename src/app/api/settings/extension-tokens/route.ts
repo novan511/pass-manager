@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
-import { requireUser, randomToken, sha256Hex } from "@/lib/auth";
+import { createHmac, randomBytes } from "crypto";
+import { requireUser } from "@/lib/auth";
+import { db, newId, nowIso } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
-import { createHmac } from "crypto";
 
 function secret() {
   return process.env.SESSION_SECRET || "dev-only-session-secret-change-me";
@@ -12,12 +12,21 @@ function secret() {
 export async function GET() {
   try {
     const user = await requireUser();
-    const tokens = await prisma.extensionToken.findMany({
-      where: { userId: user.id },
-      select: { id: true, label: true, expiresAt: true, lastUsedAt: true, createdAt: true },
-      orderBy: { createdAt: "desc" },
+    const { data, error } = await db()
+      .from("extension_tokens")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+    if (error) throw new Error(error.message);
+    return NextResponse.json({
+      tokens: (data ?? []).map((t) => ({
+        id: t.id,
+        label: t.label,
+        expiresAt: t.expires_at,
+        lastUsedAt: t.last_used_at,
+        createdAt: t.created_at,
+      })),
     });
-    return NextResponse.json({ tokens });
   } catch (err) {
     return handleApiError(err);
   }
@@ -32,20 +41,33 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser();
     const body = createSchema.parse(await req.json().catch(() => ({})));
-    const raw = randomToken(32);
+    const raw = randomBytes(32).toString("base64url");
     const tokenHash = createHmac("sha256", secret()).update(raw).digest("hex");
     const expiresAt = new Date(Date.now() + body.expiresInDays * 24 * 3600 * 1000);
-    const created = await prisma.extensionToken.create({
-      data: {
-        userId: user.id,
-        tokenHash,
+    const { data, error } = await db()
+      .from("extension_tokens")
+      .insert({
+        id: newId(),
+        user_id: user.id,
+        token_hash: tokenHash,
         label: body.label?.trim() || "Browser extension",
-        expiresAt,
+        expires_at: expiresAt.toISOString(),
+        created_at: nowIso(),
+      })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return NextResponse.json(
+      {
+        token: raw,
+        record: {
+          id: data.id,
+          label: data.label,
+          expiresAt: data.expires_at,
+        },
       },
-      select: { id: true, label: true, expiresAt: true },
-    });
-    // Raw token is returned exactly once — store it in the extension now.
-    return NextResponse.json({ token: raw, record: created }, { status: 201 });
+      { status: 201 },
+    );
   } catch (err) {
     return handleApiError(err);
   }
@@ -57,15 +79,14 @@ export async function DELETE(req: NextRequest) {
   try {
     const user = await requireUser();
     const body = revokeSchema.parse(await req.json());
-    await prisma.extensionToken.deleteMany({ where: { id: body.id, userId: user.id } });
+    const { error } = await db()
+      .from("extension_tokens")
+      .delete()
+      .eq("id", body.id)
+      .eq("user_id", user.id);
+    if (error) throw new Error(error.message);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return handleApiError(err);
   }
 }
-
-// Re-export for extension API validation
-export function hashExtensionToken(raw: string) {
-  return createHmac("sha256", secret()).update(raw).digest("hex");
-}
-export { sha256Hex };

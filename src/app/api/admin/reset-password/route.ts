@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { randomBytes } from "crypto";
-import { prisma } from "@/lib/prisma";
 import { requireOrgAdmin, isSuperadmin } from "@/lib/auth";
+import { findUserById, updateUser } from "@/lib/supabase/db";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import { handleApiError } from "@/lib/api";
 
@@ -17,25 +17,21 @@ function tempPassword(): string {
   return `Tmp-${a}-${b}`;
 }
 
-/**
- * Org owner / platform: reset a user's *account* login password via Supabase Auth.
- * Does not touch the vault master password.
- */
 export async function POST(req: NextRequest) {
   try {
     const actor = await requireOrgAdmin();
     const body = schema.parse(await req.json());
-    const target = await prisma.user.findUnique({ where: { id: body.userId } });
+    const target = await findUserById(body.userId);
     if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
-    if (target.platformRole === "superadmin" && !isSuperadmin(actor)) {
+    if (target.platform_role === "superadmin" && !isSuperadmin(actor)) {
       return NextResponse.json({ error: "Cannot reset a platform owner." }, { status: 403 });
     }
     if (!isSuperadmin(actor)) {
-      if (!actor.organizationId || target.organizationId !== actor.organizationId) {
+      if (!actor.organization_id || target.organization_id !== actor.organization_id) {
         return NextResponse.json({ error: "User is not in your organization." }, { status: 403 });
       }
     }
-    if (!target.supabaseId) {
+    if (!target.supabase_id) {
       return NextResponse.json(
         { error: "This user has not signed in with Supabase yet." },
         { status: 400 },
@@ -44,15 +40,12 @@ export async function POST(req: NextRequest) {
 
     const plain = body.newPassword || tempPassword();
     const admin = createSupabaseAdminClient();
-    const { error } = await admin.auth.admin.updateUserById(target.supabaseId, {
+    const { error } = await admin.auth.admin.updateUserById(target.supabase_id, {
       password: plain,
     });
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
-
-    await prisma.session.deleteMany({ where: { userId: target.id } }).catch(() => {});
-    await prisma.passwordReset.deleteMany({ where: { userId: target.id } }).catch(() => {});
 
     return NextResponse.json({
       ok: true,

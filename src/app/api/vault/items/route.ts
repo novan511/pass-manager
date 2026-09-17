@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+import { db, newId, nowIso } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
-import { canAccessCategory, effectiveCategories } from "@/lib/categories";
+import { effectiveCategories, canAccessCategory } from "@/lib/categories";
 
 const createSchema = z.object({
   ciphertext: z.string().min(8),
@@ -11,36 +11,32 @@ const createSchema = z.object({
   category: z.string().min(1).max(40),
 });
 
-/** List encrypted items the user is allowed to access. */
 export async function GET() {
   try {
     const user = await requireUser();
-    const allowed = effectiveCategories(user.role, user.allowedCategories, {
-      orgRole: user.orgRole,
-      platformRole: user.platformRole,
+    const allowed = effectiveCategories(user.role, user.allowed_categories, {
+      orgRole: user.org_role,
+      platformRole: user.platform_role,
     });
-    // Avoid Prisma `in: []` (invalid / returns nothing useful).
     if (allowed.length === 0) {
-      return NextResponse.json({
-        items: [],
-        allowedCategories: allowed,
-        role: user.role,
-      });
+      return NextResponse.json({ items: [], allowedCategories: allowed, role: user.role });
     }
-    const items = await prisma.vaultItem.findMany({
-      where: { userId: user.id, category: { in: allowed } },
-      select: {
-        id: true,
-        ciphertext: true,
-        iv: true,
-        category: true,
-        updatedAt: true,
-        createdAt: true,
-      },
-      orderBy: { updatedAt: "desc" },
-    });
+    const { data, error } = await db()
+      .from("vault_items")
+      .select("*")
+      .eq("user_id", user.id)
+      .in("category", allowed)
+      .order("updated_at", { ascending: false });
+    if (error) throw new Error(error.message);
     return NextResponse.json({
-      items,
+      items: (data ?? []).map((r) => ({
+        id: r.id,
+        ciphertext: r.ciphertext,
+        iv: r.iv,
+        category: r.category,
+        updatedAt: r.updated_at,
+        createdAt: r.created_at,
+      })),
       allowedCategories: allowed,
       role: user.role,
     });
@@ -54,9 +50,9 @@ export async function POST(req: NextRequest) {
     const user = await requireUser();
     const body = createSchema.parse(await req.json());
     if (
-      !canAccessCategory(user.role, user.allowedCategories, body.category, {
-        orgRole: user.orgRole,
-        platformRole: user.platformRole,
+      !canAccessCategory(user.role, user.allowed_categories, body.category, {
+        orgRole: user.org_role,
+        platformRole: user.platform_role,
       })
     ) {
       return NextResponse.json(
@@ -66,23 +62,34 @@ export async function POST(req: NextRequest) {
         { status: 403 },
       );
     }
-    const item = await prisma.vaultItem.create({
-      data: {
-        userId: user.id,
+    const now = nowIso();
+    const { data, error } = await db()
+      .from("vault_items")
+      .insert({
+        id: newId(),
+        user_id: user.id,
         ciphertext: body.ciphertext,
         iv: body.iv,
         category: body.category.toLowerCase(),
+        created_at: now,
+        updated_at: now,
+      })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return NextResponse.json(
+      {
+        item: {
+          id: data.id,
+          ciphertext: data.ciphertext,
+          iv: data.iv,
+          category: data.category,
+          updatedAt: data.updated_at,
+          createdAt: data.created_at,
+        },
       },
-      select: {
-        id: true,
-        ciphertext: true,
-        iv: true,
-        category: true,
-        updatedAt: true,
-        createdAt: true,
-      },
-    });
-    return NextResponse.json({ item }, { status: 201 });
+      { status: 201 },
+    );
   } catch (err) {
     return handleApiError(err);
   }

@@ -1,68 +1,72 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import { requireSuperadmin } from "@/lib/auth";
+import { db, newId, nowIso, createOrganization, createUser, updateUser, findUserByEmail, findOrgBySlug } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 
-/**
- * Platform (SaaS) view — metadata only.
- * Zero-knowledge: never returns ciphertext, password hashes, or vault keys.
- */
 export async function GET() {
   try {
     await requireSuperadmin();
 
-    const orgs = await prisma.organization.findMany({
-      orderBy: { createdAt: "asc" },
-      include: {
-        users: {
-          select: {
-            id: true,
-            email: true,
-            orgRole: true,
-            platformRole: true,
-            status: true,
-            allowedCategories: true,
-            createdAt: true,
-            _count: { select: { items: true, credentials: true } },
-          },
-        },
-      },
-    });
+    const { data: orgs, error } = await db()
+      .from("organizations")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
 
-    return NextResponse.json({
-      zeroKnowledge: true,
-      note: "Platform sees structure only. Passwords stay encrypted on user devices.",
-      organizations: orgs.map((org) => {
-        const owners = org.users.filter((u) => u.orgRole === "owner");
-        const members = org.users.filter((u) => u.orgRole !== "owner");
+    const result = await Promise.all(
+      (orgs ?? []).map(async (org) => {
+        const { data: users } = await db()
+          .from("users")
+          .select("id, email, org_role, platform_role, status, created_at")
+          .eq("organization_id", org.id);
+
+        const owners: unknown[] = [];
+        const members: unknown[] = [];
+        let itemCount = 0;
+        let passkeyCount = 0;
+
+        for (const u of users ?? []) {
+          const { count: ic } = await db()
+            .from("vault_items")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", u.id);
+          const { count: pc } = await db()
+            .from("credentials")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", u.id);
+          itemCount += ic ?? 0;
+          passkeyCount += pc ?? 0;
+          const row = {
+            id: u.id,
+            email: u.email,
+            status: u.status,
+            itemCount: ic ?? 0,
+            passkeyCount: pc ?? 0,
+            createdAt: u.created_at,
+          };
+          if (u.org_role === "owner") owners.push(row);
+          else members.push(row);
+        }
+
         return {
           id: org.id,
           name: org.name,
           slug: org.slug,
           status: org.status,
-          createdAt: org.createdAt,
-          itemCount: org.users.reduce((sum, u) => sum + u._count.items, 0),
-          passkeyCount: org.users.reduce((sum, u) => sum + u._count.credentials, 0),
-          owners: owners.map((u) => ({
-            id: u.id,
-            email: u.email,
-            status: u.status,
-            platformRole: u.platformRole,
-            itemCount: u._count.items,
-            passkeyCount: u._count.credentials,
-            createdAt: u.createdAt,
-          })),
-          members: members.map((u) => ({
-            id: u.id,
-            email: u.email,
-            status: u.status,
-            itemCount: u._count.items,
-            passkeyCount: u._count.credentials,
-            createdAt: u.createdAt,
-          })),
+          createdAt: org.created_at,
+          itemCount,
+          passkeyCount,
+          owners,
+          members,
         };
       }),
+    );
+
+    return NextResponse.json({
+      zeroKnowledge: true,
+      note: "Platform sees structure only. Passwords stay encrypted on user devices.",
+      organizations: result,
     });
   } catch (err) {
     return handleApiError(err);
@@ -85,7 +89,6 @@ function slugify(name: string): string {
   );
 }
 
-/** Platform can provision a new customer project. */
 export async function POST(req: NextRequest) {
   try {
     await requireSuperadmin();
@@ -93,32 +96,29 @@ export async function POST(req: NextRequest) {
     const ownerEmail = body.ownerEmail.trim().toLowerCase();
 
     let slug = slugify(body.name);
-    if (await prisma.organization.findUnique({ where: { slug } })) {
+    if (await findOrgBySlug(slug)) {
       slug = `${slug}-${Date.now().toString(36)}`;
     }
 
-    const existingOwner = await prisma.user.findUnique({ where: { email: ownerEmail } });
+    const existingOwner = await findUserByEmail(ownerEmail);
     if (existingOwner && !body.ownerPassword) {
-      // Attach existing account as owner of the new org.
-      if (existingOwner.platformRole === "superadmin") {
+      if (existingOwner.platform_role === "superadmin") {
         return NextResponse.json(
           { error: "Use a different email for the project owner." },
           { status: 400 },
         );
       }
-      const org = await prisma.organization.create({
-        data: { name: body.name.trim(), slug },
+      const org = await createOrganization(body.name.trim(), slug);
+      await updateUser(existingOwner.id, {
+        organization_id: org.id,
+        org_role: "owner",
+        role: "admin",
+        status: "active",
       });
-      await prisma.user.update({
-        where: { id: existingOwner.id },
-        data: {
-          organizationId: org.id,
-          orgRole: "owner",
-          role: "admin",
-          status: "active",
-        },
-      });
-      return NextResponse.json({ organization: org, owner: { id: existingOwner.id, email: ownerEmail } }, { status: 201 });
+      return NextResponse.json(
+        { organization: org, owner: { id: existingOwner.id, email: ownerEmail } },
+        { status: 201 },
+      );
     }
 
     if (!body.ownerPassword) {
@@ -134,28 +134,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { hashPassword } = await import("@/lib/auth");
-    const org = await prisma.organization.create({
-      data: { name: body.name.trim(), slug },
+    const { createSupabaseAdminClient } = await import("@/lib/supabase/server");
+    const admin = createSupabaseAdminClient();
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
+      email: ownerEmail,
+      password: body.ownerPassword,
+      email_confirm: true,
     });
-    const owner = await prisma.user.create({
-      data: {
-        email: ownerEmail,
-        passwordHash: hashPassword(body.ownerPassword),
-        platformRole: "user",
-        orgRole: "owner",
-        role: "admin",
-        status: "active",
-        organizationId: org.id,
-        allowedCategories: "work,personal,finance,social,other",
-      },
+    if (createErr || !created.user) {
+      return NextResponse.json(
+        { error: createErr?.message || "Could not create owner auth user." },
+        { status: 400 },
+      );
+    }
+
+    const org = await createOrganization(body.name.trim(), slug);
+    const owner = await createUser({
+      supabase_id: created.user.id,
+      email: ownerEmail,
+      platform_role: "user",
+      org_role: "owner",
+      role: "admin",
+      status: "active",
+      organization_id: org.id,
+      allowed_categories: "work,personal,finance,social,other",
     });
 
     return NextResponse.json(
       {
         organization: org,
         owner: { id: owner.id, email: owner.email },
-        note: "Share the owner password with your customer out-of-band. It is never stored in plaintext.",
+        note: "Share the owner password with your customer out-of-band.",
       },
       { status: 201 },
     );
@@ -174,19 +183,27 @@ export async function PATCH(req: NextRequest) {
   try {
     await requireSuperadmin();
     const body = patchSchema.parse(await req.json());
-    const org = await prisma.organization.update({
-      where: { id: body.organizationId },
-      data: {
-        ...(body.status ? { status: body.status } : {}),
-        ...(body.name ? { name: body.name.trim() } : {}),
-      },
-    });
+    const patch: Record<string, string> = { updated_at: nowIso() };
+    if (body.status) patch.status = body.status;
+    if (body.name) patch.name = body.name.trim();
+
+    const { data: org, error } = await db()
+      .from("organizations")
+      .update(patch)
+      .eq("id", body.organizationId)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+
     if (body.status === "suspended") {
-      await prisma.session.deleteMany({
-        where: { user: { organizationId: org.id } },
-      });
+      const { data: users } = await db()
+        .from("users")
+        .select("id")
+        .eq("organization_id", org.id);
+      // Sessions are Supabase Auth — nothing to delete in our tables.
+      void users;
     }
-    return NextResponse.json({ organization: org });
+    return NextResponse.json({ organization: { id: org.id, name: org.name, status: org.status } });
   } catch (err) {
     return handleApiError(err);
   }
@@ -194,23 +211,19 @@ export async function PATCH(req: NextRequest) {
 
 const deleteSchema = z.object({
   organizationId: z.string().min(1),
-  /** Must match organization name exactly — type-to-confirm. */
   confirmName: z.string().min(1),
 });
 
-/**
- * Permanent delete: removes the org, every user in it, and all vault data.
- * Irreversible. Zero-knowledge: we only delete ciphertext blobs, never plaintext secrets.
- */
 export async function DELETE(req: NextRequest) {
   try {
     await requireSuperadmin();
     const body = deleteSchema.parse(await req.json());
 
-    const org = await prisma.organization.findUnique({
-      where: { id: body.organizationId },
-      include: { users: { select: { id: true, platformRole: true } } },
-    });
+    const { data: org } = await db()
+      .from("organizations")
+      .select("*")
+      .eq("id", body.organizationId)
+      .maybeSingle();
     if (!org) {
       return NextResponse.json({ error: "Project not found." }, { status: 404 });
     }
@@ -220,34 +233,34 @@ export async function DELETE(req: NextRequest) {
         { status: 400 },
       );
     }
-    if (org.users.some((u) => u.platformRole === "superadmin")) {
+
+    const { data: users } = await db()
+      .from("users")
+      .select("id, platform_role")
+      .eq("organization_id", org.id);
+    if ((users ?? []).some((u) => u.platform_role === "superadmin")) {
       return NextResponse.json(
         { error: "Cannot delete a project that contains a platform owner." },
         { status: 400 },
       );
     }
 
-    // Order matters for SQLite FKs: dependents first.
-    await prisma.$transaction([
-      prisma.session.deleteMany({ where: { user: { organizationId: org.id } } }),
-      prisma.extensionToken.deleteMany({ where: { user: { organizationId: org.id } } }),
-      prisma.credential.deleteMany({ where: { user: { organizationId: org.id } } }),
-      prisma.vaultItem.deleteMany({ where: { user: { organizationId: org.id } } }),
-      prisma.vaultProfile.deleteMany({ where: { user: { organizationId: org.id } } }),
-      prisma.userKeyPair.deleteMany({ where: { user: { organizationId: org.id } } }),
-      prisma.orgMemberKey.deleteMany({ where: { organizationId: org.id } }),
-      prisma.orgVaultItem.deleteMany({ where: { organizationId: org.id } }),
-      prisma.user.deleteMany({ where: { organizationId: org.id } }),
-      prisma.organization.delete({ where: { id: org.id } }),
-    ]);
+    // Delete dependents then org (FK order).
+    for (const u of users ?? []) {
+      await db().from("credentials").delete().eq("user_id", u.id);
+      await db().from("vault_items").delete().eq("user_id", u.id);
+      await db().from("vault_profiles").delete().eq("user_id", u.id);
+      await db().from("user_key_pairs").delete().eq("user_id", u.id);
+      await db().from("extension_tokens").delete().eq("user_id", u.id);
+    }
+    await db().from("org_member_keys").delete().eq("organization_id", org.id);
+    await db().from("org_vault_items").delete().eq("organization_id", org.id);
+    await db().from("users").delete().eq("organization_id", org.id);
+    await db().from("organizations").delete().eq("id", org.id);
 
     return NextResponse.json({
       ok: true,
-      deleted: {
-        organizationId: org.id,
-        name: org.name,
-        users: org.users.length,
-      },
+      deleted: { organizationId: org.id, name: org.name, users: (users ?? []).length },
     });
   } catch (err) {
     return handleApiError(err);

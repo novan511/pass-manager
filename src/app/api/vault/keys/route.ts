@@ -1,19 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+import { db, nowIso } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 
-/** Current user's key material (private key stays sealed under their KEK). */
 export async function GET() {
   try {
     const user = await requireUser();
-    const kp = await prisma.userKeyPair.findUnique({ where: { userId: user.id } });
+    const { data, error } = await db()
+      .from("user_key_pairs")
+      .select("*")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
     return NextResponse.json({
-      hasKeyPair: !!kp,
-      publicKey: kp?.publicKey ?? null,
-      // Sealed with the user's master-password KEK — safe to return; server cannot open it.
-      encryptedPrivateKey: kp?.encryptedPrivateKey ?? null,
+      hasKeyPair: !!data,
+      publicKey: data?.public_key ?? null,
+      encryptedPrivateKey: data?.encrypted_private_key ?? null,
     });
   } catch (err) {
     return handleApiError(err);
@@ -25,24 +28,26 @@ const putSchema = z.object({
   encryptedPrivateKey: z.string().min(16),
 });
 
-/** Store (or replace) the user's wrapped RSA keypair. */
 export async function PUT(req: NextRequest) {
   try {
     const user = await requireUser();
     const body = putSchema.parse(await req.json());
-    const kp = await prisma.userKeyPair.upsert({
-      where: { userId: user.id },
-      create: {
-        userId: user.id,
-        publicKey: body.publicKey,
-        encryptedPrivateKey: body.encryptedPrivateKey,
-      },
-      update: {
-        publicKey: body.publicKey,
-        encryptedPrivateKey: body.encryptedPrivateKey,
-      },
-    });
-    return NextResponse.json({ hasKeyPair: true, publicKey: kp.publicKey });
+    const { data, error } = await db()
+      .from("user_key_pairs")
+      .upsert(
+        {
+          user_id: user.id,
+          public_key: body.publicKey,
+          encrypted_private_key: body.encryptedPrivateKey,
+          updated_at: nowIso(),
+          created_at: nowIso(),
+        },
+        { onConflict: "user_id" },
+      )
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return NextResponse.json({ hasKeyPair: true, publicKey: data.public_key });
   } catch (err) {
     return handleApiError(err);
   }

@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
-import { requireOrgAdmin, hashPassword, isSuperadmin } from "@/lib/auth";
+import { requireOrgAdmin, isSuperadmin } from "@/lib/auth";
+import {
+  db,
+  newId,
+  nowIso,
+  findUserById,
+  createUser,
+  updateUser,
+} from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 
 const schema = z.object({
@@ -9,70 +16,83 @@ const schema = z.object({
   password: z.string().min(10).max(256),
 });
 
-/** Org owner invites a member into their own project. Never returns secrets. */
 export async function POST(req: NextRequest) {
   try {
     const actor = await requireOrgAdmin();
     const body = schema.parse(await req.json());
     const email = body.email.trim().toLowerCase();
 
-    if (!actor.organizationId && !isSuperadmin(actor)) {
+    if (!actor.organization_id && !isSuperadmin(actor)) {
       return NextResponse.json({ error: "You are not in an organization." }, { status: 400 });
     }
-    if (!actor.organizationId) {
+    if (!actor.organization_id) {
       return NextResponse.json(
         { error: "Platform accounts must create a project first (Platform → New project)." },
         { status: 400 },
       );
     }
 
-    const org = await prisma.organization.findUnique({ where: { id: actor.organizationId } });
+    const { data: org, error: orgErr } = await db()
+      .from("organizations")
+      .select("*")
+      .eq("id", actor.organization_id)
+      .maybeSingle();
+    if (orgErr) throw new Error(orgErr.message);
     if (!org || org.status !== "active") {
       return NextResponse.json({ error: "Organization is not active." }, { status: 403 });
     }
 
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const { data: existing, error: exErr } = await db()
+      .from("users")
+      .select("*")
+      .eq("email", email)
+      .maybeSingle();
+    if (exErr) throw new Error(exErr.message);
+
     if (existing) {
-      if (existing.organizationId === org.id) {
+      if (existing.organization_id === org.id) {
         return NextResponse.json({ error: "This email is already in your project." }, { status: 409 });
       }
-      if (existing.platformRole === "superadmin") {
+      if (existing.platform_role === "superadmin") {
         return NextResponse.json({ error: "Cannot invite a platform owner." }, { status: 400 });
       }
-      // Move existing account into this org as member.
-      const user = await prisma.user.update({
-        where: { id: existing.id },
-        data: {
-          organizationId: org.id,
-          orgRole: "member",
-          role: "member",
-          status: "active",
-          allowedCategories: "personal",
-        },
+      const user = await updateUser(existing.id, {
+        organization_id: org.id,
+        org_role: "member",
+        role: "member",
+        status: "active",
+        allowed_categories: "personal",
       });
       return NextResponse.json({
-        user: { id: user.id, email: user.email, orgRole: user.orgRole },
+        user: { id: user.id, email: user.email, orgRole: user.org_role },
         moved: true,
       });
     }
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        passwordHash: hashPassword(body.password),
-        platformRole: "user",
-        orgRole: "member",
-        role: "member",
-        status: "active",
-        organizationId: org.id,
-        allowedCategories: "personal",
-      },
+    const user = await createUser({
+      email,
+      platform_role: "user",
+      org_role: "member",
+      role: "member",
+      status: "active",
+      organization_id: org.id,
+      allowed_categories: "personal",
+    });
+    // Note: invite does not create Supabase Auth user — owner should also create
+    // the auth account, or user signs up with same email after being moved.
+    // For password-based invite, create Supabase auth user too:
+    const { createSupabaseAdminClient } = await import("@/lib/supabase/server");
+    const admin = createSupabaseAdminClient();
+    await admin.auth.admin.createUser({
+      email,
+      password: body.password,
+      email_confirm: true,
     });
 
     return NextResponse.json(
       {
-        user: { id: user.id, email: user.email, orgRole: user.orgRole },
-        note: "Share the temporary password with them out-of-band. Ask them to change it after first login.",
+        user: { id: user.id, email: user.email, orgRole: user.org_role },
+        note: "Share the temporary password with them out-of-band.",
       },
       { status: 201 },
     );

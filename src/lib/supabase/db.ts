@@ -1,0 +1,303 @@
+import { createClient, type SupabaseClient, type User as SbUser } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
+
+/** Server-only Supabase client with service_role (bypasses RLS). */
+export function db(): SupabaseClient {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error("Supabase service role is not configured.");
+  }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+export function newId(): string {
+  return randomUUID();
+}
+
+export function nowIso(): string {
+  return new Date().toISOString();
+}
+
+/* ——— row types (snake_case columns) ——— */
+
+export type OrgRow = {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserRow = {
+  id: string;
+  supabase_id: string | null;
+  email: string;
+  display_name: string | null;
+  avatar: string | null;
+  platform_role: string;
+  org_role: string | null;
+  role: string;
+  status: string;
+  allowed_categories: string;
+  organization_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VaultProfileRow = {
+  user_id: string;
+  kdf_salt: string;
+  wrapped_dek: string;
+  verifier: string;
+  wrapped_dek_passkey: string | null;
+  passkey_prf_salt: string | null;
+  kdf_iterations: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CredentialRow = {
+  id: string;
+  user_id: string;
+  credential_id: string;
+  public_key: string;
+  counter: number;
+  device_name: string;
+  transports: string | null;
+  created_at: string;
+};
+
+export type WebAuthnChallengeRow = {
+  id: string;
+  user_id: string | null;
+  email: string | null;
+  challenge: string;
+  type: string;
+  expires_at: string;
+  created_at: string;
+};
+
+export type VaultItemRow = {
+  id: string;
+  user_id: string;
+  category: string;
+  ciphertext: string;
+  iv: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExtensionTokenRow = {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  label: string;
+  expires_at: string;
+  last_used_at: string | null;
+  created_at: string;
+};
+
+export type UserKeyPairRow = {
+  user_id: string;
+  public_key: string;
+  encrypted_private_key: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrgMemberKeyRow = {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  encrypted_org_key: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrgVaultItemRow = {
+  id: string;
+  organization_id: string;
+  category: string;
+  ciphertext: string;
+  iv: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function must<T>(
+  promise: PromiseLike<{ data: T | null; error: { message: string } | null }>,
+  label = "query",
+): Promise<T> {
+  const { data, error } = await promise;
+  if (error) throw new Error(`${label}: ${error.message}`);
+  return data as T;
+}
+
+export async function findUserByEmail(email: string): Promise<UserRow | null> {
+  const { data, error } = await db()
+    .from("users")
+    .select("*")
+    .eq("email", email.toLowerCase())
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as UserRow | null;
+}
+
+export async function findUserById(id: string): Promise<UserRow | null> {
+  const { data, error } = await db()
+    .from("users")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as UserRow | null;
+}
+
+export async function findUserBySupabaseId(supabaseId: string): Promise<UserRow | null> {
+  const { data, error } = await db()
+    .from("users")
+    .select("*")
+    .eq("supabase_id", supabaseId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as UserRow | null;
+}
+
+export async function countUsers(): Promise<number> {
+  const { count, error } = await db()
+    .from("users")
+    .select("id", { count: "exact", head: true });
+  if (error) throw new Error(error.message);
+  return count ?? 0;
+}
+
+export async function createUser(input: Partial<UserRow> & { email: string }): Promise<UserRow> {
+  const row = {
+    id: input.id ?? newId(),
+    supabase_id: input.supabase_id ?? null,
+    email: input.email.toLowerCase(),
+    display_name: input.display_name ?? null,
+    avatar: input.avatar ?? null,
+    platform_role: input.platform_role ?? "user",
+    org_role: input.org_role ?? null,
+    role: input.role ?? "member",
+    status: input.status ?? "active",
+    allowed_categories: input.allowed_categories ?? "personal",
+    organization_id: input.organization_id ?? null,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+  const { data, error } = await db()
+    .from("users")
+    .insert(row)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data as UserRow;
+}
+
+export async function updateUser(
+  id: string,
+  patch: Partial<UserRow>,
+): Promise<UserRow> {
+  const { data, error } = await db()
+    .from("users")
+    .update({ ...patch, updated_at: nowIso() })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data as UserRow;
+}
+
+export async function createOrganization(name: string, slug: string): Promise<OrgRow> {
+  const row = {
+    id: newId(),
+    name,
+    slug,
+    status: "active",
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+  const { data, error } = await db()
+    .from("organizations")
+    .insert(row)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data as OrgRow;
+}
+
+export async function findOrgBySlug(slug: string): Promise<OrgRow | null> {
+  const { data, error } = await db()
+    .from("organizations")
+    .select("*")
+    .eq("slug", slug)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as OrgRow | null;
+}
+
+export async function findOrgById(id: string): Promise<OrgRow | null> {
+  const { data, error } = await db()
+    .from("organizations")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as OrgRow | null;
+}
+
+/** Map Supabase auth user → app user (create/link as needed). */
+export async function ensureAppUser(sbUser: SbUser): Promise<UserRow | null> {
+  if (!sbUser.id || !sbUser.email) return null;
+  const email = sbUser.email.toLowerCase();
+
+  let appUser = await findUserBySupabaseId(sbUser.id);
+  if (appUser) {
+    if (appUser.status !== "active") return null;
+    if (appUser.organization_id) {
+      const org = await findOrgById(appUser.organization_id);
+      if (org && org.status === "suspended") return null;
+    }
+    return appUser;
+  }
+
+  const byEmail = await findUserByEmail(email);
+  if (byEmail) {
+    appUser = await updateUser(byEmail.id, { supabase_id: sbUser.id });
+    if (appUser.status !== "active") return null;
+    if (appUser.organization_id) {
+      const org = await findOrgById(appUser.organization_id);
+      if (org && org.status === "suspended") return null;
+    }
+    return appUser;
+  }
+
+  const count = await countUsers();
+  const orgName = `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
+  let slug =
+    orgName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "org";
+  if (await findOrgBySlug(slug)) {
+    slug = `${slug}-${Date.now().toString(36)}`;
+  }
+  const org = await createOrganization(orgName, slug);
+  appUser = await createUser({
+    supabase_id: sbUser.id,
+    email,
+    platform_role: count === 0 ? "superadmin" : "user",
+    org_role: "owner",
+    role: "admin",
+    status: "active",
+    allowed_categories: "work,personal,finance,social,other",
+    organization_id: org.id,
+  });
+  return appUser;
+}

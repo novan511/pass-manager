@@ -1,58 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import { requireOrgAdmin, isSuperadmin } from "@/lib/auth";
+import { db, findUserById, updateUser, findOrgById } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
-import { categoriesToCsv, parseCategories, ALL_CATEGORIES_CSV } from "@/lib/categories";
+import { categoriesToCsv, parseCategories } from "@/lib/categories";
 
-/**
- * Org owner: manage members in their own organization only.
- * Platform superadmin: can patch any non-superadmin user by id.
- * Returns metadata only — never vault ciphertext or password hashes.
- */
 export async function GET() {
   try {
     const actor = await requireOrgAdmin();
-    const where = isSuperadmin(actor)
-      ? {}
-      : actor.organizationId
-        ? { organizationId: actor.organizationId }
-        : { id: "__none__" };
+    let query = db()
+      .from("users")
+      .select(
+        "id, email, role, org_role, platform_role, status, allowed_categories, organization_id, created_at, organizations(id, name, slug)",
+      )
+      .order("created_at", { ascending: true });
 
-    const users = await prisma.user.findMany({
-      where,
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        orgRole: true,
-        platformRole: true,
-        status: true,
-        allowedCategories: true,
-        organizationId: true,
-        createdAt: true,
-        organization: { select: { id: true, name: true, slug: true } },
-        _count: { select: { items: true, credentials: true } },
-      },
-      orderBy: { createdAt: "asc" },
-    });
+    if (!isSuperadmin(actor)) {
+      query = query.eq("organization_id", actor.organization_id ?? "");
+    }
+
+    const { data: users, error } = await query;
+    if (error) throw new Error(error.message);
+
+    const mapped = await Promise.all(
+      (users ?? []).map(async (u) => {
+        const { count: itemCount } = await db()
+          .from("vault_items")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", u.id);
+        const { count: passkeyCount } = await db()
+          .from("credentials")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", u.id);
+        const org = Array.isArray(u.organizations) ? u.organizations[0] : u.organizations;
+        return {
+          id: u.id,
+          email: u.email,
+          role: u.role,
+          orgRole: u.org_role,
+          platformRole: u.platform_role,
+          status: u.status,
+          allowedCategories: parseCategories(u.allowed_categories),
+          organizationId: u.organization_id,
+          organization: org ? { id: org.id, name: org.name, slug: org.slug } : null,
+          createdAt: u.created_at,
+          itemCount: itemCount ?? 0,
+          passkeyCount: passkeyCount ?? 0,
+        };
+      }),
+    );
 
     return NextResponse.json({
       scope: isSuperadmin(actor) ? "platform" : "organization",
-      users: users.map((u) => ({
-        id: u.id,
-        email: u.email,
-        role: u.role,
-        orgRole: u.orgRole,
-        platformRole: u.platformRole,
-        status: u.status,
-        allowedCategories: parseCategories(u.allowedCategories),
-        organizationId: u.organizationId,
-        organization: u.organization,
-        createdAt: u.createdAt,
-        itemCount: u._count.items,
-        passkeyCount: u._count.credentials,
-      })),
+      users: mapped,
     });
   } catch (err) {
     return handleApiError(err);
@@ -70,16 +70,13 @@ export async function PATCH(req: NextRequest) {
   try {
     const actor = await requireOrgAdmin();
     const body = patchSchema.parse(await req.json());
-
-    const target = await prisma.user.findUnique({ where: { id: body.userId } });
-    if (!target) {
-      return NextResponse.json({ error: "User not found." }, { status: 404 });
-    }
-    if (target.platformRole === "superadmin" && !isSuperadmin(actor)) {
+    const target = await findUserById(body.userId);
+    if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
+    if (target.platform_role === "superadmin" && !isSuperadmin(actor)) {
       return NextResponse.json({ error: "Cannot edit a platform owner." }, { status: 403 });
     }
     if (!isSuperadmin(actor)) {
-      if (!actor.organizationId || target.organizationId !== actor.organizationId) {
+      if (!actor.organization_id || target.organization_id !== actor.organization_id) {
         return NextResponse.json({ error: "User is not in your organization." }, { status: 403 });
       }
       if (target.id === actor.id && (body.status === "revoked" || body.orgRole === "member")) {
@@ -88,20 +85,17 @@ export async function PATCH(req: NextRequest) {
           { status: 400 },
         );
       }
-      // Only one active owner path: allow multiple owners; demoting last owner is blocked below.
     }
 
-    const nextOrgRole = body.orgRole ?? target.orgRole;
     if (body.orgRole === "member" || body.status === "revoked") {
-      const owners = await prisma.user.count({
-        where: {
-          organizationId: target.organizationId,
-          orgRole: "owner",
-          status: "active",
-          id: { not: target.id },
-        },
-      });
-      if (target.orgRole === "owner" && owners === 0 && target.organizationId) {
+      const { count: owners } = await db()
+        .from("users")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", target.organization_id ?? "")
+        .eq("org_role", "owner")
+        .eq("status", "active")
+        .neq("id", target.id);
+      if (target.org_role === "owner" && (owners ?? 0) === 0 && target.organization_id) {
         return NextResponse.json(
           { error: "An organization must keep at least one active owner." },
           { status: 400 },
@@ -109,41 +103,36 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    const updated = await prisma.user.update({
-      where: { id: target.id },
-      data: {
-        ...(body.status ? { status: body.status } : {}),
-        ...(body.orgRole
-          ? {
-              orgRole: body.orgRole,
-              role: body.orgRole === "owner" ? "admin" : "member",
-              ...(body.orgRole === "owner" ? { allowedCategories: ALL_CATEGORIES_CSV } : {}),
-            }
-          : {}),
-        ...(body.allowedCategories && nextOrgRole !== "owner"
-          ? { allowedCategories: categoriesToCsv(body.allowedCategories) }
-          : {}),
-      },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        orgRole: true,
-        platformRole: true,
-        status: true,
-        allowedCategories: true,
-        organizationId: true,
-      },
-    });
+    const patch: Record<string, string | null> = {};
+    if (body.status) patch.status = body.status;
+    if (body.orgRole) {
+      patch.org_role = body.orgRole;
+      patch.role = body.orgRole === "owner" ? "admin" : "member";
+      if (body.orgRole === "owner") patch.allowed_categories = "work,personal,finance,social,other";
+    }
+    if (body.allowedCategories && body.orgRole !== "owner") {
+      patch.allowed_categories = categoriesToCsv(body.allowedCategories);
+    }
 
+    const updated = await updateUser(target.id, patch);
     if (body.status === "revoked") {
-      await prisma.session.deleteMany({ where: { userId: target.id } });
+      try {
+        await db().from("sessions").delete().eq("user_id", target.id);
+      } catch {
+        /* ignore */
+      }
     }
 
     return NextResponse.json({
       user: {
-        ...updated,
-        allowedCategories: parseCategories(updated.allowedCategories),
+        id: updated.id,
+        email: updated.email,
+        role: updated.role,
+        orgRole: updated.org_role,
+        platformRole: updated.platform_role,
+        status: updated.status,
+        allowedCategories: parseCategories(updated.allowed_categories),
+        organizationId: updated.organization_id,
       },
     });
   } catch (err) {
@@ -157,20 +146,21 @@ export async function DELETE(req: NextRequest) {
   try {
     const actor = await requireOrgAdmin();
     const body = deleteSchema.parse(await req.json());
-    const target = await prisma.user.findUnique({ where: { id: body.userId } });
+    const target = await findUserById(body.userId);
     if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
-    if (target.platformRole === "superadmin") {
+    if (target.platform_role === "superadmin") {
       return NextResponse.json({ error: "Cannot delete a platform owner." }, { status: 400 });
     }
     if (!isSuperadmin(actor)) {
-      if (!actor.organizationId || target.organizationId !== actor.organizationId) {
+      if (!actor.organization_id || target.organization_id !== actor.organization_id) {
         return NextResponse.json({ error: "User is not in your organization." }, { status: 403 });
       }
       if (target.id === actor.id) {
         return NextResponse.json({ error: "You cannot delete your own account." }, { status: 400 });
       }
     }
-    await prisma.user.delete({ where: { id: target.id } });
+    const { error } = await db().from("users").delete().eq("id", target.id);
+    if (error) throw new Error(error.message);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return handleApiError(err);

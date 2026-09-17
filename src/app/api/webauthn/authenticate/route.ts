@@ -1,12 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
-import {
-  getSessionUser,
-  createSession,
-  allowedOrigins,
-  expectedRpId,
-} from "@/lib/auth";
+import { getSessionUser, createSession, allowedOrigins, expectedRpId } from "@/lib/auth";
+import { db, newId, nowIso, findUserById, findUserByEmail } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import {
   generateAuthenticationOptions,
@@ -15,15 +10,9 @@ import {
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
-/**
- * Two uses:
- * 1. Unlock: { email } — options for an existing user's passkeys (vault unlock / login).
- * 2. After assertion, client derives KEK from PRF and unwraps DEK locally.
- */
 const optionsSchema = z.object({
   email: z.string().email().optional(),
   credentialId: z.string().optional(),
-  /** base64 salt for WebAuthn PRF eval — required for vault unlock via passkey */
   prfSaltB64: z.string().optional(),
 });
 
@@ -33,9 +22,7 @@ export async function POST(req: NextRequest) {
     let userId: string | undefined;
 
     if (body.email) {
-      const user = await prisma.user.findUnique({
-        where: { email: body.email.trim().toLowerCase() },
-      });
+      const user = await findUserByEmail(body.email.trim().toLowerCase());
       if (!user || user.status !== "active") {
         return NextResponse.json({ error: "No active account for this email." }, { status: 404 });
       }
@@ -48,8 +35,11 @@ export async function POST(req: NextRequest) {
       userId = sessionUser.id;
     }
 
-    const credentials = await prisma.credential.findMany({ where: { userId } });
-    if (credentials.length === 0) {
+    const { data: credentials } = await db()
+      .from("credentials")
+      .select("*")
+      .eq("user_id", userId);
+    if (!credentials || credentials.length === 0) {
       return NextResponse.json(
         {
           error:
@@ -73,21 +63,20 @@ export async function POST(req: NextRequest) {
     const options = await generateAuthenticationOptions({
       rpID,
       userVerification: "preferred",
-      // Empty allowCredentials lets iOS/iCloud find synced passkeys (discoverable).
       allowCredentials: credentials.map((c) => ({
-        id: c.credentialId,
+        id: c.credential_id,
         transports: (c.transports?.split(",").filter(Boolean) ?? []) as AuthenticatorTransport[],
       })),
       extensions: prfExt,
     });
 
-    await prisma.webAuthnChallenge.create({
-      data: {
-        userId,
-        challenge: options.challenge,
-        type: "authentication",
-        expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
-      },
+    await db().from("webauthn_challenges").insert({
+      id: newId(),
+      user_id: userId,
+      challenge: options.challenge,
+      type: "authentication",
+      expires_at: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString(),
+      created_at: nowIso(),
     });
 
     return NextResponse.json({ options, userId });
@@ -96,27 +85,28 @@ export async function POST(req: NextRequest) {
   }
 }
 
-const verifySchema = z.object({
-  response: z.any(),
-});
+const verifySchema = z.object({ response: z.any() });
 
 export async function PUT(req: NextRequest) {
   try {
     const body = verifySchema.parse(await req.json());
-    const record = await prisma.webAuthnChallenge.findFirst({
-      where: {
-        challenge: body.response?.challenge,
-        type: "authentication",
-        expiresAt: { gte: new Date() },
-      },
-    });
-    if (!record || !record.userId) {
+    const { data: record } = await db()
+      .from("webauthn_challenges")
+      .select("*")
+      .eq("challenge", body.response?.challenge)
+      .eq("type", "authentication")
+      .gte("expires_at", nowIso())
+      .maybeSingle();
+    if (!record || !record.user_id) {
       return NextResponse.json({ error: "Challenge expired. Try again." }, { status: 400 });
     }
 
-    const cred = await prisma.credential.findFirst({
-      where: { userId: record.userId, credentialId: body.response?.id },
-    });
+    const { data: cred } = await db()
+      .from("credentials")
+      .select("*")
+      .eq("user_id", record.user_id)
+      .eq("credential_id", body.response?.id)
+      .maybeSingle();
     if (!cred) {
       return NextResponse.json({ error: "Unknown passkey." }, { status: 400 });
     }
@@ -128,8 +118,8 @@ export async function PUT(req: NextRequest) {
       expectedRPID: expectedRpId(req),
       requireUserVerification: false,
       credential: {
-        id: cred.credentialId,
-        publicKey: Buffer.from(cred.publicKey, "base64url"),
+        id: cred.credential_id,
+        publicKey: Buffer.from(cred.public_key, "base64url"),
         counter: cred.counter,
         transports: (cred.transports?.split(",").filter(Boolean) ?? []) as string[],
       },
@@ -139,13 +129,13 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Passkey verification failed." }, { status: 400 });
     }
 
-    await prisma.credential.update({
-      where: { id: cred.id },
-      data: { counter: verification.authenticationInfo.newCounter },
-    });
-    await prisma.webAuthnChallenge.delete({ where: { id: record.id } }).catch(() => {});
+    await db()
+      .from("credentials")
+      .update({ counter: verification.authenticationInfo.newCounter })
+      .eq("id", cred.id);
+    await db().from("webauthn_challenges").delete().eq("id", record.id);
 
-    const account = await prisma.user.findUnique({ where: { id: record.userId } });
+    const account = await findUserById(record.user_id);
     if (!account || account.status !== "active") {
       return NextResponse.json({ error: "Your access has been revoked." }, { status: 403 });
     }
@@ -154,7 +144,7 @@ export async function PUT(req: NextRequest) {
 
     return NextResponse.json({
       verified: true,
-      userId: record.userId,
+      userId: record.user_id,
       user: { id: account.id, email: account.email, role: account.role },
     });
   } catch (err) {

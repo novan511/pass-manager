@@ -1,28 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+import { db, newId, nowIso, findUserById } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 
-/** This user's RSA-wrapped org DEK (if shared with them). */
 export async function GET() {
   try {
     const user = await requireUser();
-    if (!user.organizationId) {
+    if (!user.organization_id) {
       return NextResponse.json({ hasOrgKey: false });
     }
-    const wrap = await prisma.orgMemberKey.findUnique({
-      where: {
-        organizationId_userId: {
-          organizationId: user.organizationId,
-          userId: user.id,
-        },
-      },
-    });
+    const { data, error } = await db()
+      .from("org_member_keys")
+      .select("*")
+      .eq("organization_id", user.organization_id)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
     return NextResponse.json({
-      hasOrgKey: !!wrap,
-      encryptedOrgKey: wrap?.encryptedOrgKey ?? null,
-      organizationId: user.organizationId,
+      hasOrgKey: !!data,
+      encryptedOrgKey: data?.encrypted_org_key ?? null,
+      organizationId: user.organization_id,
     });
   } catch (err) {
     return handleApiError(err);
@@ -30,29 +28,22 @@ export async function GET() {
 }
 
 const putSchema = z.object({
-  /** Used when owner grants themselves on org create / re-share */
   encryptedOrgKey: z.string().min(32),
   targetUserId: z.string().optional(),
 });
 
-/**
- * PUT body:
- * - { encryptedOrgKey } → save wrap for current user
- * - org owners can also pass targetUserId to grant another member
- *   (they must already have encrypted that member's public key client-side)
- */
 export async function PUT(req: NextRequest) {
   try {
     const user = await requireUser();
     const body = putSchema.parse(await req.json());
-    if (!user.organizationId) {
+    if (!user.organization_id) {
       return NextResponse.json({ error: "You are not in an organization." }, { status: 400 });
     }
 
     const targetId = body.targetUserId ?? user.id;
     const isSelf = targetId === user.id;
-    const isOwner = user.orgRole === "owner" || user.role === "admin";
-    const isPlatform = user.platformRole === "superadmin";
+    const isOwner = user.org_role === "owner" || user.role === "admin";
+    const isPlatform = user.platform_role === "superadmin";
     if (!isSelf && !isOwner && !isPlatform) {
       return NextResponse.json(
         { error: "Only org owners can share the vault key." },
@@ -61,30 +52,30 @@ export async function PUT(req: NextRequest) {
     }
 
     if (!isSelf) {
-      const target = await prisma.user.findFirst({
-        where: { id: targetId, organizationId: user.organizationId },
-      });
-      if (!target) {
+      const target = await findUserById(targetId);
+      if (!target || target.organization_id !== user.organization_id) {
         return NextResponse.json({ error: "Target user not in your organization." }, { status: 404 });
       }
     }
 
-    const wrap = await prisma.orgMemberKey.upsert({
-      where: {
-        organizationId_userId: {
-          organizationId: user.organizationId,
-          userId: targetId,
+    const now = nowIso();
+    const { data, error } = await db()
+      .from("org_member_keys")
+      .upsert(
+        {
+          id: newId(),
+          organization_id: user.organization_id,
+          user_id: targetId,
+          encrypted_org_key: body.encryptedOrgKey,
+          created_at: now,
+          updated_at: now,
         },
-      },
-      create: {
-        organizationId: user.organizationId,
-        userId: targetId,
-        encryptedOrgKey: body.encryptedOrgKey,
-      },
-      update: { encryptedOrgKey: body.encryptedOrgKey },
-    });
-
-    return NextResponse.json({ ok: true, id: wrap.id });
+        { onConflict: "organization_id,user_id" },
+      )
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return NextResponse.json({ ok: true, id: data.id });
   } catch (err) {
     return handleApiError(err);
   }

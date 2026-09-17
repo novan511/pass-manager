@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
-import { createSupabaseServerClient, createSupabaseAdminClient } from "@/lib/supabase/server";
+import {
+  createSupabaseServerClient,
+  createSupabaseAdminClient,
+} from "@/lib/supabase/server";
+import {
+  db,
+  newId,
+  nowIso,
+  findUserByEmail,
+  findOrgBySlug,
+  createOrganization,
+  createUser,
+  type UserRow,
+} from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import { ALL_CATEGORIES_CSV } from "@/lib/categories";
 
@@ -19,20 +31,11 @@ const schema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    if (!process.env.DATABASE_URL) {
-      return NextResponse.json(
-        {
-          error:
-            "DATABASE_URL is not set on the server. Copy Supabase → Settings → Database → Pooler URI into Vercel env DATABASE_URL, then redeploy.",
-        },
-        { status: 500 },
-      );
-    }
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return NextResponse.json(
         {
           error:
-            "Supabase Auth env is incomplete. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+            "Supabase env is incomplete. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
         },
         { status: 500 },
       );
@@ -41,31 +44,29 @@ export async function POST(req: NextRequest) {
     const body = schema.parse(await req.json());
     const email = body.email.trim().toLowerCase();
 
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
+    if (await findUserByEmail(email)) {
       return NextResponse.json(
         { error: "An account with this email already exists." },
         { status: 409 },
       );
     }
 
-    const isFirstUser = (await prisma.user.count()) === 0;
-    const orgName =
-      body.organizationName?.trim() ||
-      `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
+    const { count } = await db()
+      .from("users")
+      .select("id", { count: "exact", head: true });
+    const isFirstUser = (count ?? 0) === 0;
 
+    const orgName =
+      body.organizationName?.trim() || `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
     let slug =
       orgName
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "") || "org";
-    if (await prisma.organization.findUnique({ where: { slug } })) {
+    if (await findOrgBySlug(slug)) {
       slug = `${slug}-${Date.now().toString(36)}`;
     }
-
-    const org = await prisma.organization.create({
-      data: { name: orgName.trim(), slug },
-    });
+    const org = await createOrganization(orgName.trim(), slug);
 
     const admin = createSupabaseAdminClient();
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -74,24 +75,22 @@ export async function POST(req: NextRequest) {
       email_confirm: true,
     });
     if (createErr || !created.user) {
-      await prisma.organization.delete({ where: { id: org.id } }).catch(() => {});
+      await db().from("organizations").delete().eq("id", org.id);
       return NextResponse.json(
         { error: createErr?.message || "Could not create Supabase auth user." },
         { status: 400 },
       );
     }
 
-    const user = await prisma.user.create({
-      data: {
-        supabaseId: created.user.id,
-        email,
-        platformRole: isFirstUser ? "superadmin" : "user",
-        orgRole: "owner",
-        role: "admin",
-        status: "active",
-        allowedCategories: ALL_CATEGORIES_CSV,
-        organizationId: org.id,
-      },
+    const user = await createUser({
+      supabase_id: created.user.id,
+      email,
+      platform_role: isFirstUser ? "superadmin" : "user",
+      org_role: "owner",
+      role: "admin",
+      status: "active",
+      allowed_categories: ALL_CATEGORIES_CSV,
+      organization_id: org.id,
     });
 
     const supabase = await createSupabaseServerClient();
@@ -111,8 +110,8 @@ export async function POST(req: NextRequest) {
         id: user.id,
         email: user.email,
         role: user.role,
-        orgRole: user.orgRole,
-        platformRole: user.platformRole,
+        orgRole: user.org_role,
+        platformRole: user.platform_role,
         organization: { id: org.id, name: org.name, slug: org.slug },
       },
       isFirstUser,

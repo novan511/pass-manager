@@ -26,7 +26,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Link / load Prisma profile (also enforces status + org suspended).
     const user = await getSessionUser();
     if (!user) {
       await supabase.auth.signOut();
@@ -41,8 +40,8 @@ export async function POST(req: NextRequest) {
         id: user.id,
         email: user.email,
         role: user.role,
-        orgRole: user.orgRole,
-        platformRole: user.platformRole,
+        orgRole: user.org_role,
+        platformRole: user.platform_role,
       },
     });
   } catch (err) {
