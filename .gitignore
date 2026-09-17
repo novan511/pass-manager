@@ -45,3 +45,9 @@ prisma/dev.db-journal
 *.tsbuildinfo
 next-env.d.ts
 
+
+# iOS
+ios/*.xcodeproj
+ios/*.xcworkspace
+ios/DerivedData
+xcuserdata/

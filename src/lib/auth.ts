@@ -1,4 +1,6 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { headers } from "next/headers";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ensureAppUser, type UserRow } from "@/lib/supabase/db";
 
@@ -45,12 +47,41 @@ export async function destroySession() {
   await supabase.auth.signOut();
 }
 
-/** Supabase Auth session → app users row (auto-link / create). */
-export async function getSessionUser(): Promise<UserRow | null> {
+/**
+ * Resolve Supabase user from:
+ * - Authorization: Bearer <access_token>  (iOS / mobile apps)
+ * - Session cookies                       (web)
+ */
+async function getSupabaseAuthUser() {
+  const h = await headers();
+  const auth = h.get("authorization") ?? "";
+
+  if (auth.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    if (!token) return null;
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anon) return null;
+    const client = createSupabaseClient(url, anon, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    });
+    const {
+      data: { user },
+    } = await client.auth.getUser();
+    return user;
+  }
+
   const supabase = await createSupabaseServerClient();
   const {
-    data: { user: sbUser },
+    data: { user },
   } = await supabase.auth.getUser();
+  return user;
+}
+
+/** Supabase Auth → app users row (auto-link / create). */
+export async function getSessionUser(): Promise<UserRow | null> {
+  const sbUser = await getSupabaseAuthUser();
   if (!sbUser?.id || !sbUser.email) return null;
   return ensureAppUser(sbUser);
 }
