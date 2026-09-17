@@ -1588,6 +1588,7 @@ function OrgPanel({
   const [error, setError] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
   const [invitePassword, setInvitePassword] = useState("");
+  const [inviteCats, setInviteCats] = useState<string[]>(["personal", "social"]);
   const [memberKeys, setMemberKeys] = useState<
     { id: string; email: string; publicKey: string | null; hasVaultKeys: boolean }[]
   >([]);
@@ -1687,22 +1688,28 @@ function OrgPanel({
           const res = await fetch("/api/admin/invite", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: inviteEmail, password: invitePassword }),
+            body: JSON.stringify({
+              email: inviteEmail,
+              password: invitePassword,
+              allowedCategories: inviteCats.length ? inviteCats : ["personal"],
+            }),
           });
           const data = await res.json();
           if (!res.ok) {
             toast(data.error || "Invite failed");
             return;
           }
-          toast("Member added to this project");
+          toast("Member added · categories: " + (data.categories || inviteCats.join(", ")));
           setInviteEmail("");
           setInvitePassword("");
           load();
+          loadKeys();
         }}
       >
         <p className="font-semibold text-sm">Add teammate</p>
         <p className="text-xs" style={{ color: "var(--muted)" }}>
-          Creates a member account under this project. Share the temporary password out-of-band — we never see vault master passwords.
+          They get a sign-in account. Categories decide which login folders they can use.
+          Shared logins must live under <strong>Team vault</strong> (not Mine), then use Share vault.
         </p>
         <div className="grid sm:grid-cols-2 gap-3">
           <div>
@@ -1712,6 +1719,28 @@ function OrgPanel({
           <div>
             <label className="label">Temp password</label>
             <input className="input mono" type="password" required minLength={10} value={invitePassword} onChange={(e) => setInvitePassword(e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <p className="label">Categories they can use</p>
+          <div className="flex flex-wrap gap-2">
+            {CATEGORIES.map((c) => {
+              const on = inviteCats.includes(c);
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  className={`btn btn-sm ${on ? "btn-primary" : "btn-secondary"}`}
+                  onClick={() =>
+                    setInviteCats((xs) =>
+                      xs.includes(c) ? xs.filter((x) => x !== c) : [...xs, c],
+                    )
+                  }
+                >
+                  {CATEGORY_LABELS[c]}
+                </button>
+              );
+            })}
           </div>
         </div>
         <button type="submit" className="btn btn-secondary btn-sm">Add member</button>

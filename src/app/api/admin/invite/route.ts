@@ -3,17 +3,18 @@ import { z } from "zod";
 import { requireOrgAdmin, isSuperadmin } from "@/lib/auth";
 import {
   db,
-  newId,
-  nowIso,
   findUserById,
   createUser,
   updateUser,
 } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
+import { categoriesToCsv } from "@/lib/categories";
 
 const schema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(10).max(256),
+  /** Optional login categories to grant immediately (e.g. ["social"]). */
+  allowedCategories: z.array(z.string()).optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -21,13 +22,15 @@ export async function POST(req: NextRequest) {
     const actor = await requireOrgAdmin();
     const body = schema.parse(await req.json());
     const email = body.email.trim().toLowerCase();
+    const cats = categoriesToCsv(body.allowedCategories ?? ["personal"]) || "personal";
 
-    if (!actor.organization_id && !isSuperadmin(actor)) {
-      return NextResponse.json({ error: "You are not in an organization." }, { status: 400 });
-    }
     if (!actor.organization_id) {
       return NextResponse.json(
-        { error: "Platform accounts must create a project first (Platform → New project)." },
+        {
+          error: isSuperadmin(actor)
+            ? "Platform accounts must create a project first (Platform → New project)."
+            : "You are not in an organization.",
+        },
         { status: 400 },
       );
     }
@@ -51,7 +54,16 @@ export async function POST(req: NextRequest) {
 
     if (existing) {
       if (existing.organization_id === org.id) {
-        return NextResponse.json({ error: "This email is already in your project." }, { status: 409 });
+        // Already in this project — just update categories.
+        const user = await updateUser(existing.id, {
+          allowed_categories: existing.org_role === "owner" ? existing.allowed_categories : cats,
+          status: "active",
+        });
+        return NextResponse.json({
+          user: { id: user.id, email: user.email, orgRole: user.org_role },
+          moved: true,
+          categories: cats,
+        });
       }
       if (existing.platform_role === "superadmin") {
         return NextResponse.json({ error: "Cannot invite a platform owner." }, { status: 400 });
@@ -61,11 +73,12 @@ export async function POST(req: NextRequest) {
         org_role: "member",
         role: "member",
         status: "active",
-        allowed_categories: "personal",
+        allowed_categories: cats,
       });
       return NextResponse.json({
         user: { id: user.id, email: user.email, orgRole: user.org_role },
         moved: true,
+        categories: cats,
       });
     }
 
@@ -76,23 +89,26 @@ export async function POST(req: NextRequest) {
       role: "member",
       status: "active",
       organization_id: org.id,
-      allowed_categories: "personal",
+      allowed_categories: cats,
     });
-    // Note: invite does not create Supabase Auth user — owner should also create
-    // the auth account, or user signs up with same email after being moved.
-    // For password-based invite, create Supabase auth user too:
+
     const { createSupabaseAdminClient } = await import("@/lib/supabase/server");
     const admin = createSupabaseAdminClient();
-    await admin.auth.admin.createUser({
+    const { error: authErr } = await admin.auth.admin.createUser({
       email,
       password: body.password,
       email_confirm: true,
     });
+    if (authErr && !/already/i.test(authErr.message)) {
+      await db().from("users").delete().eq("id", user.id);
+      return NextResponse.json({ error: authErr.message }, { status: 400 });
+    }
 
     return NextResponse.json(
       {
         user: { id: user.id, email: user.email, orgRole: user.org_role },
-        note: "Share the temporary password with them out-of-band.",
+        categories: cats,
+        note: "Share the temporary password out-of-band. They must also get Team vault access if you stored shared logins there.",
       },
       { status: 201 },
     );

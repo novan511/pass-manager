@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireOrgAdmin, isSuperadmin } from "@/lib/auth";
-import { db, findUserById, updateUser } from "@/lib/supabase/db";
+import {
+  db,
+  findUserById,
+  updateUser,
+  createUser,
+} from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
-import { categoriesToCsv, parseCategories } from "@/lib/categories";
+import { categoriesToCsv } from "@/lib/categories";
 
 export async function GET() {
   try {
@@ -11,7 +16,7 @@ export async function GET() {
     let query = db()
       .from("users")
       .select(
-        "id, email, role, org_role, platform_role, status, allowed_categories, organization_id, created_at, organizations(id, name, slug)",
+        "id, email, role, org_role, platform_role, status, allowed_categories, organization_id, created_at",
       )
       .order("created_at", { ascending: true });
 
@@ -24,15 +29,25 @@ export async function GET() {
 
     const mapped = await Promise.all(
       (users ?? []).map(async (u) => {
-        const { count: itemCount } = await db()
-          .from("vault_items")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", u.id);
-        const { count: passkeyCount } = await db()
-          .from("credentials")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", u.id);
-        const org = Array.isArray(u.organizations) ? u.organizations[0] : u.organizations;
+        const [{ count: itemCount }, { count: passkeyCount }, { data: org }] =
+          await Promise.all([
+            db()
+              .from("vault_items")
+              .select("id", { count: "exact", head: true })
+              .eq("user_id", u.id),
+            db()
+              .from("credentials")
+              .select("id", { count: "exact", head: true })
+              .eq("user_id", u.id),
+            u.organization_id
+              ? db()
+                  .from("organizations")
+                  .select("id, name, slug")
+                  .eq("id", u.organization_id)
+                  .maybeSingle()
+              : Promise.resolve({ data: null }),
+          ]);
+        const orgRow = Array.isArray(org) ? org[0] : org;
         return {
           id: u.id,
           email: u.email,
@@ -40,9 +55,12 @@ export async function GET() {
           orgRole: u.org_role,
           platformRole: u.platform_role,
           status: u.status,
-          allowedCategories: parseCategories(u.allowed_categories),
+          allowedCategories: String(u.allowed_categories || "")
+            .split(",")
+            .map((s: string) => s.trim().toLowerCase())
+            .filter(Boolean),
           organizationId: u.organization_id,
-          organization: org ? { id: org.id, name: org.name, slug: org.slug } : null,
+          organization: orgRow ? { id: orgRow.id, name: orgRow.name, slug: orgRow.slug } : null,
           createdAt: u.created_at,
           itemCount: itemCount ?? 0,
           passkeyCount: passkeyCount ?? 0,
@@ -87,35 +105,20 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    if (body.orgRole === "member" || body.status === "revoked") {
-      const { count: owners } = await db()
-        .from("users")
-        .select("id", { count: "exact", head: true })
-        .eq("organization_id", target.organization_id ?? "")
-        .eq("org_role", "owner")
-        .eq("status", "active")
-        .neq("id", target.id);
-      if (target.org_role === "owner" && (owners ?? 0) === 0 && target.organization_id) {
-        return NextResponse.json(
-          { error: "An organization must keep at least one active owner." },
-          { status: 400 },
-        );
-      }
-    }
-
     const patch: Record<string, string | null> = {};
     if (body.status) patch.status = body.status;
     if (body.orgRole) {
       patch.org_role = body.orgRole;
       patch.role = body.orgRole === "owner" ? "admin" : "member";
-      if (body.orgRole === "owner") patch.allowed_categories = "work,personal,finance,social,other";
+      if (body.orgRole === "owner") {
+        patch.allowed_categories = "work,personal,finance,social,other";
+      }
     }
     if (body.allowedCategories && body.orgRole !== "owner") {
-      patch.allowed_categories = categoriesToCsv(body.allowedCategories);
+      patch.allowed_categories = categoriesToCsv(body.allowedCategories) || "personal";
     }
 
     const updated = await updateUser(target.id, patch);
-    // Supabase Auth sessions are revoked on password reset; status check blocks access.
 
     return NextResponse.json({
       user: {
@@ -125,7 +128,10 @@ export async function PATCH(req: NextRequest) {
         orgRole: updated.org_role,
         platformRole: updated.platform_role,
         status: updated.status,
-        allowedCategories: parseCategories(updated.allowed_categories),
+        allowedCategories: String(updated.allowed_categories || "")
+          .split(",")
+          .map((s: string) => s.trim().toLowerCase())
+          .filter(Boolean),
         organizationId: updated.organization_id,
       },
     });
