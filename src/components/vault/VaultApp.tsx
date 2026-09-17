@@ -1403,9 +1403,9 @@ function PlatformPanel({ toast }: { toast: (m: string) => void }) {
               Hashed with scrypt on our side for login only. We never receive this user&rsquo;s vault master password.
             </p>
           </div>
-          <div className="flex gap-2">
-            <button type="submit" className="btn btn-primary btn-sm">Create project</button>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowCreate(false)}>Cancel</button>
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" className="btn btn-primary btn-sm flex-1 sm:flex-none">Create project</button>
+            <button type="button" className="btn btn-secondary btn-sm flex-1 sm:flex-none" onClick={() => setShowCreate(false)}>Cancel</button>
           </div>
         </form>
       )}
@@ -1426,46 +1426,48 @@ function PlatformPanel({ toast }: { toast: (m: string) => void }) {
         <div className="space-y-3">
           {orgs.map((org) => (
             <div key={org.id} className="card p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="font-semibold">{org.name}</p>
-                  <p className="text-xs mono" style={{ color: "var(--faint)" }}>
+              <div className="admin-card-head flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold break-all">{org.name}</p>
+                  <p className="admin-meta mono mt-0.5">
                     {org.slug} · {org.itemCount} items · {org.passkeyCount} passkeys
                   </p>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`badge ${org.status === "active" ? "badge-ok" : "badge-danger"}`}>{org.status}</span>
-                  <button
-                    type="button"
-                    className={`btn btn-sm ${org.status === "active" ? "btn-secondary" : "btn-secondary"}`}
-                    onClick={async () => {
-                      const res = await fetch("/api/platform/organizations", {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          organizationId: org.id,
-                          status: org.status === "active" ? "suspended" : "active",
-                        }),
-                      });
-                      const data = await res.json();
-                      if (!res.ok) toast(data.error || "Update failed");
-                      else toast(org.status === "active" ? "Project suspended" : "Project restored");
-                      load();
-                    }}
-                  >
-                    {org.status === "active" ? "Suspend" : "Restore"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-sm"
-                    onClick={() => {
-                      setDeleteTarget(org);
-                      setDeleteConfirm("");
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
+                <span className={`badge ${org.status === "active" ? "badge-ok" : "badge-danger"}`}>
+                  {org.status}
+                </span>
+              </div>
+              <div className="admin-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={async () => {
+                    const res = await fetch("/api/platform/organizations", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        organizationId: org.id,
+                        status: org.status === "active" ? "suspended" : "active",
+                      }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) toast(data.error || "Update failed");
+                    else toast(org.status === "active" ? "Project suspended" : "Project restored");
+                    load();
+                  }}
+                >
+                  {org.status === "active" ? "Suspend" : "Restore"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger btn-sm"
+                  onClick={() => {
+                    setDeleteTarget(org);
+                    setDeleteConfirm("");
+                  }}
+                >
+                  Delete
+                </button>
               </div>
 
               <div>
@@ -1723,7 +1725,7 @@ function OrgPanel({
         </div>
         <div>
           <p className="label">Categories they can use</p>
-          <div className="flex flex-wrap gap-2">
+          <div className="chip-row">
             {CATEGORIES.map((c) => {
               const on = inviteCats.includes(c);
               return (
@@ -1743,7 +1745,7 @@ function OrgPanel({
             })}
           </div>
         </div>
-        <button type="submit" className="btn btn-secondary btn-sm">Add member</button>
+        <button type="submit" className="btn btn-secondary btn-sm w-full sm:w-auto">Add member</button>
       </form>
 
       {error && (
@@ -1760,58 +1762,64 @@ function OrgPanel({
         ) : (
           users.map((u) => (
             <div key={u.id} className="p-4 space-y-3">
-              <div className="flex flex-wrap items-center gap-3 justify-between">
-                <div className="min-w-0">
-                  <p className="font-medium text-sm truncate">{u.email}</p>
-                  <p className="text-xs mt-0.5" style={{ color: "var(--faint)" }}>
+              <div className="admin-card-head flex flex-wrap items-center gap-3 justify-between">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm break-all">{u.email}</p>
+                  <p className="admin-meta mt-0.5">
                     {u.itemCount} items · {u.passkeyCount} passkeys ·{" "}
-                    {u.orgRole === "owner" ? "owner" : "member"} · joined {new Date(u.createdAt).toLocaleDateString()}
+                    {u.orgRole === "owner" ? "owner" : "member"} · joined{" "}
+                    {new Date(u.createdAt).toLocaleDateString()}
                   </p>
                 </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`badge ${u.status === "active" ? "badge-ok" : "badge-danger"}`}>{u.status}</span>
-                  <button
-                    type="button"
-                    className={`btn btn-sm ${u.status === "active" ? "btn-danger" : "btn-secondary"}`}
-                    onClick={() => patch(u.id, { status: u.status === "active" ? "revoked" : "active" })}
-                  >
-                    {u.status === "active" ? "Revoke" : "Restore"}
-                  </button>
-                </div>
+                <span className={`badge ${u.status === "active" ? "badge-ok" : "badge-danger"}`}>
+                  {u.status}
+                </span>
               </div>
 
               {u.platformRole !== "superadmin" && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="label mb-0">Role</span>
-                  {(["owner", "member"] as const).map((r) => (
+                <>
+                  <div className="admin-actions">
+                    <span className="label mb-0 w-full sm:w-auto" style={{ width: "auto" }}>
+                      Role
+                    </span>
+                    {(["owner", "member"] as const).map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        className={`btn btn-sm ${(u.orgRole ?? "member") === r ? "btn-primary" : "btn-secondary"}`}
+                        onClick={() => patch(u.id, { orgRole: r })}
+                      >
+                        {r}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="admin-actions">
                     <button
-                      key={r}
                       type="button"
-                      className={`btn btn-sm ${(u.orgRole ?? "member") === r ? "btn-primary" : "btn-secondary"}`}
-                      onClick={() => patch(u.id, { orgRole: r })}
+                      className={`btn btn-sm ${u.status === "active" ? "btn-danger" : "btn-secondary"}`}
+                      onClick={() => patch(u.id, { status: u.status === "active" ? "revoked" : "active" })}
                     >
-                      {r}
+                      {u.status === "active" ? "Revoke access" : "Restore access"}
                     </button>
-                  ))}
-                  {u.id !== user.id && (
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      disabled={vault.busy || !vault.hasOrgKey}
-                      onClick={async () => {
-                        try {
-                          await vault.shareOrgKeyWithMember(u.id);
-                          toast("Shared vault key sent to member");
-                          loadKeys();
-                        } catch (err) {
-                          toast(err instanceof Error ? err.message : "Share failed");
-                        }
-                      }}
-                    >
-                      Share vault
-                    </button>
-                  )}
-                  {u.platformRole !== "superadmin" && (
+                    {u.id !== user.id && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={vault.busy || !vault.hasOrgKey}
+                        onClick={async () => {
+                          try {
+                            await vault.shareOrgKeyWithMember(u.id);
+                            toast("Shared vault key sent to member");
+                            loadKeys();
+                          } catch (err) {
+                            toast(err instanceof Error ? err.message : "Share failed");
+                          }
+                        }}
+                      >
+                        Share vault
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
@@ -1829,32 +1837,32 @@ function OrgPanel({
                         }
                         toast(`Temp password: ${data.temporaryPassword}`);
                         alert(
-                          `Temporary sign-in password for ${data.email}:\n\n${data.temporaryPassword}\n\nCopy it now — shown once. Share out-of-band. Does not change vault master password.`,
+                          `Temporary sign-in password for ${data.email}:\n\n${data.temporaryPassword}\n\nCopy it now — shown once. Does not change vault master password.`,
                         );
                       }}
                     >
                       Reset password
                     </button>
-                  )}
-                  {(() => {
-                    const mk = memberKeys.find((m) => m.id === u.id);
-                    if (!mk) return null;
-                    if (!mk.hasVaultKeys) {
-                      return (
-                        <span className="badge" title="They must unlock their vault once with master password">
-                          needs vault setup
-                        </span>
-                      );
-                    }
-                    return <span className="badge badge-ok">keys ready</span>;
-                  })()}
-                </div>
+                    {(() => {
+                      const mk = memberKeys.find((m) => m.id === u.id);
+                      if (!mk) return null;
+                      if (!mk.hasVaultKeys) {
+                        return (
+                          <span className="badge" title="They must unlock their vault once with master password">
+                            needs vault setup
+                          </span>
+                        );
+                      }
+                      return <span className="badge badge-ok">keys ready</span>;
+                    })()}
+                  </div>
+                </>
               )}
 
               {u.orgRole !== "owner" && u.platformRole !== "superadmin" ? (
                 <div>
                   <p className="label">Login categories</p>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="chip-row">
                     {CATEGORIES.map((c) => {
                       const on = u.allowedCategories.includes(c);
                       return (

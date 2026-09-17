@@ -504,3 +504,53 @@ button {
   background: var(--accent-soft);
   border-color: transparent;
 }
+
+/* Admin / Team / Platform — mobile-friendly rows */
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .admin-actions .btn {
+    flex: 1 1 auto;
+    min-width: calc(50% - 0.25rem);
+    justify-content: center;
+  }
+  .admin-toolbar .btn {
+    flex: 1 1 auto;
+    min-width: calc(50% - 0.25rem);
+  }
+  .chip-row .btn {
+    flex: 1 1 auto;
+    min-width: calc(33.333% - 0.4rem);
+    justify-content: center;
+  }
+  .admin-card-head {
+    flex-direction: column;
+    align-items: flex-start !important;
+  }
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.admin-meta {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--faint);
+  word-break: break-word;
+}
