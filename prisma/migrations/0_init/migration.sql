@@ -53,7 +53,7 @@ CREATE TABLE "OrgVaultItem" (
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
-    "passwordHash" TEXT NOT NULL,
+    "passwordHash" TEXT,
     "displayName" TEXT,
     "avatar" TEXT,
     "platformRole" TEXT NOT NULL DEFAULT 'user',
