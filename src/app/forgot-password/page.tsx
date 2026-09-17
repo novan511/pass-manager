@@ -3,31 +3,39 @@
 import { useState } from "react";
 import Link from "next/link";
 import { KeyRound, Loader2, Mail } from "lucide-react";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [devUrl, setDevUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    setDevUrl(null);
     try {
-      const res = await fetch("/api/auth/forgot-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed.");
+      // MUST run in the browser so the PKCE code_verifier is stored
+      // in THIS browser's cookies. Server-side call → "Auth session missing".
+      const supabase = createSupabaseBrowserClient();
+      const { error: err } = await supabase.auth.resetPasswordForEmail(
+        email.trim().toLowerCase(),
+        {
+          redirectTo: `${window.location.origin}/reset-password`,
+        },
+      );
+      if (err) {
+        if (err.message.toLowerCase().includes("rate") || err.message.toLowerCase().includes("too many")) {
+          throw new Error("Too many attempts. Wait a minute and try again.");
+        }
+        throw new Error(err.message || "Could not send reset email.");
+      }
       setDone(true);
-      setMessage(data.message || "Check your email or ask your project owner.");
-      if (data.resetUrl) setDevUrl(data.resetUrl);
+      setMessage(
+        "If that email has an account, a reset link was sent. Open it in this same browser within ~1 hour.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -87,22 +95,10 @@ export default function ForgotPasswordPage() {
           ) : (
             <div className="space-y-3">
               <p className="text-sm" style={{ color: "var(--ok)" }}>{message}</p>
-              {devUrl && (
-                <div className="rounded-lg p-3" style={{ background: "var(--surface-2)" }}>
-                  <p className="text-xs mb-2" style={{ color: "var(--faint)" }}>
-                    Dev mode (email not configured) — open:
-                  </p>
-                  <a href={devUrl} className="text-sm break-all" style={{ color: "var(--accent)" }}>
-                    {devUrl}
-                  </a>
-                </div>
-              )}
-              {!devUrl && (
-                <p className="text-sm" style={{ color: "var(--muted)" }}>
-                  No email? Ask your project <strong>owner</strong> to open Team → Reset password
-                  and share the temporary sign-in password with you.
-                </p>
-              )}
+              <p className="text-sm" style={{ color: "var(--muted)" }}>
+                Check <strong>Spam</strong>. Open the link in <strong>this same browser</strong>.
+                No email? Ask your project owner: Team → Reset password.
+              </p>
             </div>
           )}
 
