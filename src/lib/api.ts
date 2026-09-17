@@ -17,27 +17,38 @@ export function handleApiError(err: unknown) {
   }
 
   const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
 
-  if (msg.includes("DATABASE_URL") || msg.includes("nonempty URL")) {
+  if (lower.includes("does not exist") && lower.includes("public.")) {
     return jsonError(
       500,
-      "Server database is not configured. Set DATABASE_URL (Supabase Postgres Pooler URI) in environment variables.",
+      "Supabase tables missing. Run supabase/schema.sql in the Supabase SQL Editor, then try again.",
     );
   }
-  if (msg.includes("Supabase admin client is not configured")) {
+  if (lower.includes("duplicate key") || lower.includes("unique constraint")) {
+    return jsonError(409, "That record already exists. Try a different value or sign in instead.");
+  }
+  if (msg.includes("Supabase admin client is not configured") || lower.includes("service role")) {
     return jsonError(
       500,
-      "SUPABASE_SERVICE_ROLE_KEY is missing on the server. Set it in environment variables.",
+      "SUPABASE_SERVICE_ROLE_KEY is missing or invalid on the server.",
     );
   }
-  if (msg.toLowerCase().includes("can't reach database")) {
+  if (lower.includes("jwt") && lower.includes("invalid")) {
     return jsonError(
       500,
-      "Cannot reach the database. Check DATABASE_URL / Supabase status.",
+      "Supabase API keys are invalid. Check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+    );
+  }
+  if (lower.includes("fetch failed") || lower.includes("network")) {
+    return jsonError(
+      500,
+      "Cannot reach Supabase. Check your project status and env URLs.",
     );
   }
 
   console.error(err);
-  // Include a short hint in production logs; keep client message specific when we can.
-  return jsonError(500, "Something went wrong. Try again.");
+  // Surface a short technical hint so Vercel logs / users can diagnose.
+  const hint = msg.length > 180 ? msg.slice(0, 180) + "…" : msg;
+  return jsonError(500, `Something went wrong. ${hint}`);
 }

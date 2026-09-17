@@ -41,6 +41,21 @@ export async function POST(req: NextRequest) {
     const body = schema.parse(await req.json());
     const email = body.email.trim().toLowerCase();
 
+    // Fail fast with a clear message if app tables were never created.
+    const { error: pingErr } = await db().from("organizations").select("id").limit(1);
+    if (pingErr) {
+      if (/does not exist/i.test(pingErr.message)) {
+        return NextResponse.json(
+          {
+            error:
+              "Supabase tables are missing. Open Supabase → SQL Editor → paste supabase/schema.sql → Run, then try signup again.",
+          },
+          { status: 500 },
+        );
+      }
+      throw new Error(pingErr.message);
+    }
+
     if (await findUserByEmail(email)) {
       return NextResponse.json(
         { error: "An account with this email already exists." },
