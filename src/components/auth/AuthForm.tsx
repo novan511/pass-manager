@@ -1,11 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { KeyRound, Eye, EyeOff, Fingerprint, Loader2 } from "lucide-react";
+import { KeyRound, Eye, EyeOff, Fingerprint, Loader2, Check, X } from "lucide-react";
 
 type Mode = "login" | "signup";
+
+function passwordChecks(pw: string) {
+  return {
+    length: pw.length >= 8,
+    lower: /[a-z]/.test(pw),
+    upper: /[A-Z]/.test(pw),
+    other: /[^A-Za-z0-9]/.test(pw),
+  };
+}
 
 export function AuthForm({ mode }: { mode: Mode }) {
   const router = useRouter();
@@ -16,11 +25,17 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const [busy, setBusy] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
 
+  const checks = useMemo(() => passwordChecks(password), [password]);
+  const signupValid = checks.length && checks.lower && checks.upper && checks.other;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
+      if (mode === "signup" && !signupValid) {
+        throw new Error("Password does not meet all requirements yet.");
+      }
       const res = await fetch(`/api/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -97,6 +112,13 @@ export function AuthForm({ mode }: { mode: Mode }) {
     }
   }
 
+  const ruleList = [
+    { key: "length", label: "At least 8 characters", ok: checks.length },
+    { key: "upper", label: "Uppercase letter (A–Z)", ok: checks.upper },
+    { key: "lower", label: "Lowercase letter (a–z)", ok: checks.lower },
+    { key: "other", label: "Symbol or number (!@#$…)", ok: checks.other },
+  ] as const;
+
   return (
     <form onSubmit={submit} className="space-y-4">
       <div>
@@ -125,9 +147,9 @@ export function AuthForm({ mode }: { mode: Mode }) {
             type={show ? "text" : "password"}
             autoComplete={mode === "signup" ? "new-password" : "current-password"}
             required
-            minLength={mode === "signup" ? 10 : 1}
+            minLength={mode === "signup" ? 8 : 1}
             className="input pr-11"
-            placeholder={mode === "signup" ? "At least 10 characters" : "••••••••"}
+            placeholder={mode === "signup" ? "Min. 8 characters" : "••••••••"}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -140,9 +162,37 @@ export function AuthForm({ mode }: { mode: Mode }) {
             {show ? <EyeOff size={15} /> : <Eye size={15} />}
           </button>
         </div>
+
         {mode === "signup" && (
-          <p className="mt-1.5 text-xs" style={{ color: "var(--faint)" }}>
-            This signs you into Keyring. Your vault master password is set separately.
+          <ul className="mt-2.5 space-y-1.5" aria-label="Password requirements">
+            {ruleList.map((rule) => (
+              <li
+                key={rule.key}
+                className="flex items-center gap-2 text-xs"
+                style={{ color: rule.ok ? "var(--ok)" : "var(--muted)" }}
+              >
+                <span
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-full shrink-0"
+                  style={{
+                    background: rule.ok
+                      ? "color-mix(in srgb, var(--ok) 18%, transparent)"
+                      : "var(--surface-2)",
+                    color: rule.ok ? "var(--ok)" : "var(--faint)",
+                    border: `1px solid ${rule.ok ? "color-mix(in srgb, var(--ok) 40%, transparent)" : "var(--border)"}`,
+                  }}
+                  aria-hidden
+                >
+                  {rule.ok ? <Check size={11} strokeWidth={3} /> : <X size={10} strokeWidth={2.5} />}
+                </span>
+                {rule.label}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {mode === "signup" && (
+          <p className="mt-2 text-xs" style={{ color: "var(--faint)" }}>
+            Used to sign in to Keyring. Your vault master password is set separately.
           </p>
         )}
       </div>
@@ -157,7 +207,11 @@ export function AuthForm({ mode }: { mode: Mode }) {
         </p>
       )}
 
-      <button type="submit" className="btn btn-primary w-full" disabled={busy || passkeyBusy}>
+      <button
+        type="submit"
+        className="btn btn-primary w-full"
+        disabled={busy || passkeyBusy || (mode === "signup" && !signupValid)}
+      >
         {busy ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
         {mode === "signup" ? "Create account" : "Sign in"}
       </button>

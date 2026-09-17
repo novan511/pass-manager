@@ -7,7 +7,13 @@ import { ALL_CATEGORIES_CSV } from "@/lib/categories";
 
 const schema = z.object({
   email: z.string().email().max(254),
-  password: z.string().min(10, "Password must be at least 10 characters.").max(256),
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters.")
+    .max(256)
+    .regex(/[A-Z]/, "Password must include an uppercase letter.")
+    .regex(/[a-z]/, "Password must include a lowercase letter.")
+    .regex(/[^A-Za-z0-9]/, "Password must include a symbol or number."),
   organizationName: z.string().min(2).max(80).optional(),
 });
 
