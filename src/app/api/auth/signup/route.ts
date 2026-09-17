@@ -10,6 +10,7 @@ import {
   findOrgBySlug,
   createOrganization,
   createUser,
+  addMembership,
 } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import { ALL_CATEGORIES_CSV } from "@/lib/categories";
@@ -103,6 +104,12 @@ export async function POST(req: NextRequest) {
       status: "active",
       allowed_categories: ALL_CATEGORIES_CSV,
       organization_id: org.id,
+    });
+    await addMembership({
+      organizationId: org.id,
+      userId: user.id,
+      orgRole: "owner",
+      allowedCategories: ALL_CATEGORIES_CSV,
     });
 
     const supabase = await createSupabaseServerClient();

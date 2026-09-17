@@ -241,22 +241,53 @@ button {
   display: grid;
   grid-template-columns: 248px 1fr;
   min-height: 100vh;
+  transition: grid-template-columns 0.15s ease;
+}
+
+.app-shell[data-collapsed="true"] {
+  grid-template-columns: 72px 1fr;
+}
+
+.sidebar[data-collapsed="true"] {
+  width: 72px;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+  align-items: center;
+}
+
+.sidebar[data-collapsed="true"] .nav-item {
+  justify-content: center;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+.sidebar[data-collapsed="true"] .nav-item span,
+.sidebar[data-collapsed="true"] .nav-item:not(:has(svg)) {
+  /* labels are conditionally rendered — nothing extra needed */
 }
 
 @media (max-width: 860px) {
-  .app-shell {
+  .app-shell,
+  .app-shell[data-collapsed="true"] {
     grid-template-columns: 1fr;
   }
   .sidebar {
     display: none;
     position: fixed;
     inset: 0 auto 0 0;
-    width: min(280px, 86vw);
+    width: min(300px, 88vw);
     z-index: 50;
     box-shadow: var(--shadow);
+    align-items: stretch;
+    padding: 1rem 0.75rem;
   }
   .sidebar[data-open] {
     display: flex;
+  }
+  .sidebar[data-collapsed="true"] {
+    width: min(300px, 88vw);
+    padding: 1rem 0.75rem;
+    align-items: stretch;
   }
 }
 

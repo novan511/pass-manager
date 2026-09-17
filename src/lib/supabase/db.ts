@@ -128,6 +128,28 @@ export type OrgVaultItemRow = {
   updated_at: string;
 };
 
+export type OrgMemberRow = {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  org_role: string;
+  allowed_categories: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Project list item for switcher + role in that project. */
+export type MembershipSummary = {
+  organizationId: string;
+  name: string;
+  slug: string;
+  status: string;
+  orgRole: string;
+  allowedCategories: string;
+  isCurrent: boolean;
+};
+
 export async function must<T>(
   promise: PromiseLike<{ data: T | null; error: { message: string } | null }>,
   label = "query",
@@ -252,14 +274,162 @@ export async function findOrgById(id: string): Promise<OrgRow | null> {
   return data as OrgRow | null;
 }
 
-/** Map Supabase auth user → app user (create/link as needed). */
+export async function addMembership(input: {
+  organizationId: string;
+  userId: string;
+  orgRole: "owner" | "member";
+  allowedCategories: string;
+  status?: string;
+}): Promise<OrgMemberRow> {
+  const now = nowIso();
+  const { data, error } = await db()
+    .from("organization_members")
+    .upsert(
+      {
+        organization_id: input.organizationId,
+        user_id: input.userId,
+        org_role: input.orgRole,
+        allowed_categories: input.allowedCategories,
+        status: input.status ?? "active",
+        created_at: now,
+        updated_at: now,
+      },
+      { onConflict: "organization_id,user_id" },
+    )
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data as OrgMemberRow;
+}
+
+export async function listMemberships(userId: string): Promise<MembershipSummary[]> {
+  const { data: memberships, error } = await db()
+    .from("organization_members")
+    .select(
+      "organization_id, org_role, allowed_categories, status, organizations(id, name, slug, status)",
+    )
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  const { data: user } = await db()
+    .from("users")
+    .select("organization_id")
+    .eq("id", userId)
+    .maybeSingle();
+
+  return (memberships ?? []).map((m) => {
+    const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
+    return {
+      organizationId: m.organization_id,
+      name: org?.name ?? "Project",
+      slug: org?.slug ?? "",
+      status: org?.status ?? m.status,
+      orgRole: m.org_role,
+      allowedCategories: m.allowed_categories,
+      isCurrent: user?.organization_id === m.organization_id,
+    };
+  });
+}
+
+export async function switchMembership(userId: string, organizationId: string): Promise<UserRow | null> {
+  const { data: membership } = await db()
+    .from("organization_members")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("organization_id", organizationId)
+    .eq("status", "active")
+    .maybeSingle();
+  if (!membership) return null;
+
+  return updateUser(userId, {
+    organization_id: organizationId,
+    org_role: membership.org_role,
+    role: membership.org_role === "owner" ? "admin" : "member",
+    allowed_categories: membership.allowed_categories,
+  });
+}
+
+export async function updateMembership(
+  organizationId: string,
+  userId: string,
+  patch: Partial<Pick<OrgMemberRow, "org_role" | "allowed_categories" | "status">>,
+): Promise<OrgMemberRow> {
+  const { data, error } = await db()
+    .from("organization_members")
+    .update({ ...patch, updated_at: nowIso() })
+    .eq("organization_id", organizationId)
+    .eq("user_id", userId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data as OrgMemberRow;
+}
+
+/** Map Supabase auth user → app user (create/link + membership as needed). */
 export async function ensureAppUser(sbUser: SbUser): Promise<UserRow | null> {
   if (!sbUser.id || !sbUser.email) return null;
   const email = sbUser.email.toLowerCase();
 
   let appUser = await findUserBySupabaseId(sbUser.id);
+  if (!appUser) {
+    const byEmail = await findUserByEmail(email);
+    if (byEmail) {
+      appUser = await updateUser(byEmail.id, { supabase_id: sbUser.id });
+    }
+  }
+
   if (appUser) {
     if (appUser.status !== "active") return null;
+
+    // Ensure at least one membership exists (legacy users / first login).
+    const { data: memberRows } = await db()
+      .from("organization_members")
+      .select("id, status")
+      .eq("user_id", appUser.id)
+      .limit(1);
+    const hasMembership = (memberRows ?? []).length > 0;
+
+    if (!hasMembership) {
+      if (appUser.organization_id) {
+        await addMembership({
+          organizationId: appUser.organization_id,
+          userId: appUser.id,
+          orgRole: (appUser.org_role as "owner" | "member") || "member",
+          allowedCategories: appUser.allowed_categories || "personal",
+          status: appUser.status,
+        });
+      } else {
+        // No org yet — create personal project + owner membership.
+        const count = await countUsers();
+        const orgName = `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
+        let slug =
+          orgName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "org";
+        if (await findOrgBySlug(slug)) {
+          slug = `${slug}-${Date.now().toString(36)}`;
+        }
+        const org = await createOrganization(orgName, slug);
+        appUser = await updateUser(appUser.id, {
+          organization_id: org.id,
+          org_role: "owner",
+          role: "admin",
+          allowed_categories: ALL_CATEGORIES_CSV_LOCAL,
+          platform_role: count === 0 ? "superadmin" : appUser.platform_role,
+        });
+        await addMembership({
+          organizationId: org.id,
+          userId: appUser.id,
+          orgRole: "owner",
+          allowedCategories: ALL_CATEGORIES_CSV_LOCAL,
+        });
+        return appUser;
+      }
+    }
+
+    // Suspended current project blocks access.
     if (appUser.organization_id) {
       const org = await findOrgById(appUser.organization_id);
       if (org && org.status === "suspended") return null;
@@ -267,17 +437,7 @@ export async function ensureAppUser(sbUser: SbUser): Promise<UserRow | null> {
     return appUser;
   }
 
-  const byEmail = await findUserByEmail(email);
-  if (byEmail) {
-    appUser = await updateUser(byEmail.id, { supabase_id: sbUser.id });
-    if (appUser.status !== "active") return null;
-    if (appUser.organization_id) {
-      const org = await findOrgById(appUser.organization_id);
-      if (org && org.status === "suspended") return null;
-    }
-    return appUser;
-  }
-
+  // Brand new user
   const count = await countUsers();
   const orgName = `${email.split("@")[0].replace(/[._]+/g, " ")} vault`;
   let slug =
@@ -296,8 +456,16 @@ export async function ensureAppUser(sbUser: SbUser): Promise<UserRow | null> {
     org_role: "owner",
     role: "admin",
     status: "active",
-    allowed_categories: "work,personal,finance,social,other",
+    allowed_categories: ALL_CATEGORIES_CSV_LOCAL,
     organization_id: org.id,
+  });
+  await addMembership({
+    organizationId: org.id,
+    userId: appUser.id,
+    orgRole: "owner",
+    allowedCategories: ALL_CATEGORIES_CSV_LOCAL,
   });
   return appUser;
 }
+
+const ALL_CATEGORIES_CSV_LOCAL = "work,personal,finance,social,other";

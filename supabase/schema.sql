@@ -14,6 +14,8 @@ create table if not exists public.organizations (
 );
 
 -- ========== Users (app profile, linked to auth.users) ==========
+-- organization_id = currently SELECTED project (active context).
+-- Full multi-project membership lives in organization_members.
 create table if not exists public.users (
   id uuid primary key default gen_random_uuid(),
   supabase_id uuid unique,
@@ -29,6 +31,31 @@ create table if not exists public.users (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- ========== Multi-project membership ==========
+-- One user can own many projects and be member of many others.
+create table if not exists public.organization_members (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  user_id uuid not null references public.users(id) on delete cascade,
+  -- "owner" | "member"
+  org_role text not null default 'member',
+  -- CSV of login categories this membership can use
+  allowed_categories text not null default 'personal',
+  status text not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, user_id)
+);
+create index if not exists organization_members_user_id_idx on public.organization_members(user_id);
+create index if not exists organization_members_org_id_idx on public.organization_members(organization_id);
+
+-- Backfill existing single-org users into organization_members
+insert into public.organization_members (organization_id, user_id, org_role, allowed_categories, status, created_at, updated_at)
+select u.organization_id, u.id, coalesce(u.org_role, 'member'), u.allowed_categories, u.status, now(), now()
+from public.users u
+where u.organization_id is not null
+on conflict (organization_id, user_id) do nothing;
 
 -- ========== Vault profile (wrapped DEK) ==========
 create table if not exists public.vault_profiles (
@@ -130,6 +157,7 @@ create index if not exists org_vault_items_org_category_idx on public.org_vault_
 -- RLS: deny all to anon/authenticated. App uses service_role from the server only.
 alter table public.organizations enable row level security;
 alter table public.users enable row level security;
+alter table public.organization_members enable row level security;
 alter table public.vault_profiles enable row level security;
 alter table public.credentials enable row level security;
 alter table public.webauthn_challenges enable row level security;

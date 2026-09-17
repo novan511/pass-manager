@@ -32,6 +32,16 @@ export type DecryptedItem = VaultItemData & {
 
 export type VaultScope = "personal" | "org";
 
+export type MembershipInfo = {
+  organizationId: string;
+  name: string;
+  slug: string;
+  status: string;
+  orgRole: string;
+  allowedCategories: string;
+  isCurrent: boolean;
+};
+
 export type SessionUser = {
   id: string;
   email: string;
@@ -43,6 +53,7 @@ export type SessionUser = {
   organizationId?: string | null;
   organization?: { id: string; name: string; slug: string; status?: string } | null;
   allowedCategories?: string[];
+  memberships?: MembershipInfo[];
 };
 
 /** PRF result may be ArrayBuffer or base64url string depending on browser JSON serialization. */
@@ -160,6 +171,7 @@ type UseVaultResult = {
   /** Owner: create team vault if missing, then share with every ready member. */
   enableTeamVault: () => Promise<{ shared: number; skipped: number }>;
   refresh: () => Promise<void>;
+  switchProject: (organizationId: string) => Promise<void>;
 };
 
 export function useVault(): UseVaultResult {
@@ -814,6 +826,45 @@ export function useVault(): UseVaultResult {
     }
   }, [loadMeta, loadItems, loadOrgItems, unlockOrgVault]);
 
+  const switchProject = useCallback(
+    async (organizationId: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await fetch("/api/auth/memberships", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ organizationId }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not switch project.");
+        // Clear team state for the old project.
+        orgDekRef.current = null;
+        orgDekRawRef.current = null;
+        setHasOrgKey(false);
+        setOrgItems([]);
+        await loadMeta();
+        if (dekRef.current) await loadItems(dekRef.current);
+        if (masterPwRef.current) {
+          try {
+            const org = await unlockOrgVault(masterPwRef.current);
+            orgDekRef.current = org.dek;
+            orgDekRawRef.current = org.raw;
+            if (org.dek) await loadOrgItems(org.dek);
+          } catch {
+            setHasOrgKey(false);
+          }
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Switch project failed.");
+        throw err;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadMeta, loadItems, loadOrgItems, unlockOrgVault],
+  );
+
   return useMemo(
     () => ({
       user,
@@ -838,6 +889,7 @@ export function useVault(): UseVaultResult {
       shareOrgKeyWithMember,
       enableTeamVault,
       refresh,
+      switchProject,
     }),
     [
       user,
@@ -862,6 +914,7 @@ export function useVault(): UseVaultResult {
       shareOrgKeyWithMember,
       enableTeamVault,
       refresh,
+      switchProject,
     ],
   );
 }

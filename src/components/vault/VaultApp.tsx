@@ -29,6 +29,10 @@ import {
   CircleDot,
   Sun,
   Moon,
+  ChevronsLeft,
+  ChevronsRight,
+  FolderKanban,
+  Check,
 } from "lucide-react";
 import type { VaultItemData } from "@/lib/crypto";
 import { generateTotp, extractTotpSecret } from "@/lib/totp";
@@ -123,6 +127,9 @@ export function VaultApp() {
   const [editing, setEditing] = useState<"new" | DecryptedItem | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [scope, setScope] = useState<"personal" | "org">("personal");
+  const [collapsed, setCollapsed] = useState(false);
+  const [showProjects, setShowProjects] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [totpMap, setTotpMap] = useState<Record<string, { code: string; secondsRemaining: number }>>({});
 
   const canPasskeyUnlock = !!vault.profile?.passkeyPrfSalt && !!vault.profile?.wrappedDekPasskey;
@@ -229,31 +236,115 @@ export function VaultApp() {
   }));
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar" data-open={mobileNav || undefined} style={mobileNav ? { display: "flex" } : undefined}>
+    <div className="app-shell" data-collapsed={collapsed ? "true" : undefined}>
+      <aside
+        className="sidebar"
+        data-open={mobileNav || undefined}
+        data-collapsed={collapsed ? "true" : undefined}
+        style={mobileNav ? { display: "flex" } : undefined}
+      >
         <div className="flex items-center gap-2 px-2 mb-3 font-semibold tracking-tight">
-          <span
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg"
-            style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+          {!collapsed && (
+            <>
+              <span
+                className="inline-flex h-7 w-7 items-center justify-center rounded-lg shrink-0"
+                style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+              >
+                <KeyRound size={14} />
+              </span>
+              Keyring
+            </>
+          )}
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm ml-auto md:hidden"
+            aria-label="Minimize sidebar"
+            onClick={() => setMobileNav(false)}
           >
-            <KeyRound size={14} />
-          </span>
-          Keyring
+            <X size={16} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm ml-auto hidden md:inline-flex"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? "Expand" : "Collapse"}
+          >
+            {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+          </button>
         </div>
+
+        {/* Project switcher (multi-membership) */}
+        {vault.user?.memberships && vault.user.memberships.length > 0 && (
+          <div className="relative mb-3">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm w-full justify-start gap-2"
+              onClick={() => setShowProjects((v) => !v)}
+              disabled={switching}
+              title={vault.user.organization?.name || "Switch project"}
+            >
+              <FolderKanban size={14} className="shrink-0" />
+              {!collapsed && (
+                <span className="truncate flex-1 text-left">
+                  {switching ? "Switching…" : vault.user.organization?.name || "No project"}
+                </span>
+              )}
+            </button>
+            {showProjects && !collapsed && (
+              <div
+                className="absolute left-0 right-0 top-full z-20 mt-1 card p-1 shadow-lg"
+                style={{ minWidth: 220 }}
+              >
+                {(vault.user.memberships || []).map((m) => (
+                  <button
+                    key={m.organizationId}
+                    type="button"
+                    className="nav-item"
+                    data-active={m.isCurrent}
+                    disabled={switching}
+                    onClick={async () => {
+                      setShowProjects(false);
+                      if (m.isCurrent) return;
+                      setSwitching(true);
+                      try {
+                        await vault.switchProject(m.organizationId);
+                        toast(`Switched to ${m.name}`);
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : "Switch failed");
+                      } finally {
+                        setSwitching(false);
+                      }
+                    }}
+                  >
+                    <FolderKanban size={14} />
+                    <span className="flex-1 truncate">{m.name}</span>
+                    <span className="text-[10px] uppercase" style={{ color: "var(--faint)" }}>
+                      {m.orgRole === "owner" ? "owner" : "member"}
+                    </span>
+                    {m.isCurrent && <Check size={14} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <button
           type="button"
-          className="btn btn-primary w-full mb-3"
+          className={`btn btn-primary ${collapsed ? "px-0 w-10 justify-center" : "w-full"} mb-3`}
+          aria-label="Add login"
           onClick={() => {
             setFilter("all");
             setEditing("new");
             setMobileNav(false);
           }}
         >
-          <Plus size={16} /> Add login
+          <Plus size={16} />
+          {!collapsed && "Add login"}
         </button>
 
-        {vault.user.organizationId && (
+        {vault.user.organizationId && !collapsed && (
           <div className="mb-3 grid grid-cols-2 gap-1 p-1 rounded-xl" style={{ background: "var(--surface-2)" }}>
             <button
               type="button"
@@ -274,106 +365,123 @@ export function VaultApp() {
             </button>
           </div>
         )}
+        {vault.user.organizationId && collapsed && (
+          <button
+            type="button"
+            className={`btn btn-sm w-10 justify-center mb-3 ${scope === "org" ? "btn-primary" : "btn-secondary"}`}
+            aria-label="Toggle Mine/Team"
+            title={scope === "personal" ? "Mine — switch to Team" : "Team — switch to Mine"}
+            onClick={() => setScope(scope === "personal" ? "org" : "personal")}
+          >
+            <Globe size={14} />
+          </button>
+        )}
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto">
-          <button type="button" className="nav-item" data-active={filter === "all"} onClick={() => { setFilter("all"); setMobileNav(false); }}>
-            <LayoutGrid size={16} /> All logins
+          <button type="button" className="nav-item" data-active={filter === "all"} title={collapsed ? "All logins" : undefined} onClick={() => { setFilter("all"); setMobileNav(false); }}>
+            <LayoutGrid size={16} /> {!collapsed && "All logins"}
           </button>
-          <button type="button" className="nav-item" data-active={filter === "favorites"} onClick={() => { setFilter("favorites"); setMobileNav(false); }}>
-            <Star size={16} /> Favorites
+          <button type="button" className="nav-item" data-active={filter === "favorites"} title={collapsed ? "Favorites" : undefined} onClick={() => { setFilter("favorites"); setMobileNav(false); }}>
+            <Star size={16} /> {!collapsed && "Favorites"}
           </button>
 
-          <p className="px-2 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--faint)" }}>
-            Categories
-          </p>
+          {!collapsed && (
+            <p className="px-2 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--faint)" }}>
+              Categories
+            </p>
+          )}
           {categoryNav.map((item) => (
             <button
               key={item.id}
               type="button"
               className="nav-item"
               data-active={filter === item.id}
+              title={collapsed ? item.label : undefined}
               onClick={() => { setFilter(item.id); setMobileNav(false); }}
             >
               {item.icon}
-              {item.label}
+              {!collapsed && item.label}
             </button>
           ))}
 
-          <button type="button" className="nav-item mt-2" data-active={filter === "generator"} onClick={() => { setFilter("generator"); setMobileNav(false); }}>
-            <Wand2 size={16} /> Generator
+          <button type="button" className="nav-item mt-2" data-active={filter === "generator"} title={collapsed ? "Generator" : undefined} onClick={() => { setFilter("generator"); setMobileNav(false); }}>
+            <Wand2 size={16} /> {!collapsed && "Generator"}
           </button>
         </nav>
 
         <div className="pt-3 mt-3 space-y-0.5 border-t hairline">
-          <button type="button" className="nav-item" data-active={filter === "settings"} onClick={() => { setFilter("settings"); setMobileNav(false); }}>
-            <Settings size={16} /> Settings
+          <button type="button" className="nav-item" data-active={filter === "settings"} title={collapsed ? "Settings" : undefined} onClick={() => { setFilter("settings"); setMobileNav(false); }}>
+            <Settings size={16} /> {!collapsed && "Settings"}
           </button>
           {(vault.user.role === "admin" ||
             vault.user.orgRole === "owner" ||
             vault.user.platformRole === "superadmin") && (
-            <button type="button" className="nav-item" data-active={filter === "admin"} onClick={() => { setFilter("admin"); setMobileNav(false); }}>
+            <button type="button" className="nav-item" data-active={filter === "admin"} title={collapsed ? (vault.user.platformRole === "superadmin" ? "Platform" : "Team admin") : undefined} onClick={() => { setFilter("admin"); setMobileNav(false); }}>
               <Shield size={16} />
-              {vault.user.platformRole === "superadmin" ? "Platform" : "Team"}
+              {!collapsed && (vault.user.platformRole === "superadmin" ? "Platform" : "Team")}
             </button>
           )}
-          <button type="button" className="nav-item" onClick={() => { vault.lock(); setSelectedId(null); }}>
-            <Lock size={16} /> Lock vault
+          <button type="button" className="nav-item" title={collapsed ? "Lock vault" : undefined} onClick={() => { vault.lock(); setSelectedId(null); }}>
+            <Lock size={16} /> {!collapsed && "Lock vault"}
           </button>
           <button
             type="button"
             className="nav-item"
+            title={collapsed ? "Sign out" : undefined}
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
               router.push("/login");
               router.refresh();
             }}
           >
-            <LogOut size={16} /> Sign out
+            <LogOut size={16} /> {!collapsed && "Sign out"}
           </button>
         </div>
 
-        <div className="px-2 pt-3 mt-3 border-t hairline">
-          <div className="flex items-center gap-2.5 min-w-0">
-            {vault.user.avatar ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={vault.user.avatar}
-                alt=""
-                className="h-9 w-9 rounded-full object-cover shrink-0 border"
-                style={{ borderColor: "var(--border)" }}
-              />
-            ) : (
-              <span className="avatar h-9 w-9 shrink-0" style={{ borderRadius: "50%" }}>
-                {(vault.user.displayName || vault.user.email)
-                  .slice(0, 1)
-                  .toUpperCase()}
-              </span>
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium truncate">
-                {vault.user.displayName || vault.user.email.split("@")[0]}
-              </p>
-              <p className="text-[11px] truncate" style={{ color: "var(--faint)" }} title={vault.user.email}>
-                {vault.user.platformRole === "superadmin"
-                  ? "Platform owner"
-                  : vault.user.orgRole === "owner"
-                    ? `Owner · ${vault.user.organization?.name ?? "Team"}`
-                    : `Member · ${vault.user.organization?.name ?? "Team"}`}
-              </p>
+        {!collapsed && (
+          <div className="px-2 pt-3 mt-3 border-t hairline">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {vault.user.avatar ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={vault.user.avatar}
+                  alt=""
+                  className="h-9 w-9 rounded-full object-cover shrink-0 border"
+                  style={{ borderColor: "var(--border)" }}
+                />
+              ) : (
+                <span className="avatar h-9 w-9 shrink-0" style={{ borderRadius: "50%" }}>
+                  {(vault.user.displayName || vault.user.email)
+                    .slice(0, 1)
+                    .toUpperCase()}
+                </span>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium truncate">
+                  {vault.user.displayName || vault.user.email.split("@")[0]}
+                </p>
+                <p className="text-[11px] truncate" style={{ color: "var(--faint)" }} title={vault.user.email}>
+                  {vault.user.platformRole === "superadmin"
+                    ? "Platform owner"
+                    : vault.user.orgRole === "owner"
+                      ? `Owner · ${vault.user.organization?.name ?? "Team"}`
+                      : `Member · ${vault.user.organization?.name ?? "Team"}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm shrink-0"
+                title="Profile settings"
+                onClick={() => {
+                  setFilter("settings");
+                  setMobileNav(false);
+                }}
+              >
+                <Settings size={14} />
+              </button>
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm shrink-0"
-              title="Profile settings"
-              onClick={() => {
-                setFilter("settings");
-                setMobileNav(false);
-              }}
-            >
-              <Settings size={14} />
-            </button>
           </div>
-        </div>
+        )}
       </aside>
 
       {mobileNav && (

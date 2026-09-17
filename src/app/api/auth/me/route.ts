@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
-import { db, findOrgById } from "@/lib/supabase/db";
+import { db, findOrgById, listMemberships } from "@/lib/supabase/db";
 import { effectiveCategories } from "@/lib/categories";
 
 export async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ user: null });
 
-  const [{ count: passkeyCount }, { data: profile }] = await Promise.all([
+  const [{ count: passkeyCount }, { data: profile }, memberships] = await Promise.all([
     db()
       .from("credentials")
       .select("id", { count: "exact", head: true })
@@ -17,6 +17,7 @@ export async function GET() {
       .select("user_id")
       .eq("user_id", user.id)
       .maybeSingle(),
+    listMemberships(user.id).catch(() => []),
   ]);
 
   const org = user.organization_id ? await findOrgById(user.organization_id) : null;
@@ -38,6 +39,7 @@ export async function GET() {
         orgRole: user.org_role,
         platformRole: user.platform_role,
       }),
+      memberships,
     },
     hasVault: !!profile,
     passkeyCount: passkeyCount ?? 0,

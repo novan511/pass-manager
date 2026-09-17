@@ -6,6 +6,7 @@ import {
   findUserById,
   createUser,
   updateUser,
+  addMembership,
 } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import { categoriesToCsv } from "@/lib/categories";
@@ -13,10 +14,13 @@ import { categoriesToCsv } from "@/lib/categories";
 const schema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(10).max(256),
-  /** Optional login categories to grant immediately (e.g. ["social"]). */
   allowedCategories: z.array(z.string()).optional(),
 });
 
+/**
+ * Invite adds a membership to the CURRENT project.
+ * Does not remove the invitee's other projects/ownerships.
+ */
 export async function POST(req: NextRequest) {
   try {
     const actor = await requireOrgAdmin();
@@ -28,7 +32,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error: isSuperadmin(actor)
-            ? "Platform accounts must create a project first (Platform → New project)."
+            ? "Switch to a project first (project switcher), then invite."
             : "You are not in an organization.",
         },
         { status: 400 },
@@ -53,32 +57,33 @@ export async function POST(req: NextRequest) {
     if (exErr) throw new Error(exErr.message);
 
     if (existing) {
-      if (existing.organization_id === org.id) {
-        // Already in this project — just update categories.
-        const user = await updateUser(existing.id, {
-          allowed_categories: existing.org_role === "owner" ? existing.allowed_categories : cats,
-          status: "active",
-        });
-        return NextResponse.json({
-          user: { id: user.id, email: user.email, orgRole: user.org_role },
-          moved: true,
-          categories: cats,
-        });
-      }
-      if (existing.platform_role === "superadmin") {
+      if (existing.platform_role === "superadmin" && existing.id !== actor.id) {
         return NextResponse.json({ error: "Cannot invite a platform owner." }, { status: 400 });
       }
-      const user = await updateUser(existing.id, {
-        organization_id: org.id,
-        org_role: "member",
-        role: "member",
+
+      await addMembership({
+        organizationId: org.id,
+        userId: existing.id,
+        orgRole: "member",
+        allowedCategories: cats,
         status: "active",
-        allowed_categories: cats,
       });
+
+      let user = existing;
+      if (!user.organization_id) {
+        user = await updateUser(user.id, {
+          organization_id: org.id,
+          org_role: "member",
+          role: "member",
+          status: "active",
+          allowed_categories: cats,
+        });
+      }
+
       return NextResponse.json({
-        user: { id: user.id, email: user.email, orgRole: user.org_role },
-        moved: true,
+        user: { id: user.id, email: user.email, orgRole: "member" },
         categories: cats,
+        keptOtherProjects: !!existing.organization_id,
       });
     }
 
@@ -90,6 +95,12 @@ export async function POST(req: NextRequest) {
       status: "active",
       organization_id: org.id,
       allowed_categories: cats,
+    });
+    await addMembership({
+      organizationId: org.id,
+      userId: user.id,
+      orgRole: "member",
+      allowedCategories: cats,
     });
 
     const { createSupabaseAdminClient } = await import("@/lib/supabase/server");
@@ -108,7 +119,7 @@ export async function POST(req: NextRequest) {
       {
         user: { id: user.id, email: user.email, orgRole: user.org_role },
         categories: cats,
-        note: "Share the temporary password out-of-band. They must also get Team vault access if you stored shared logins there.",
+        note: "Share the temporary password out-of-band.",
       },
       { status: 201 },
     );
