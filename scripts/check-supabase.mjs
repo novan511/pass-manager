@@ -1,5 +1,5 @@
 /**
- * Sanity-check Supabase Auth + optional DATABASE_URL.
+ * Sanity-check Supabase Auth env.
  * Usage: node scripts/check-supabase.mjs
  */
 import { readFileSync } from "fs";
@@ -18,12 +18,10 @@ try {
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const db = process.env.DATABASE_URL;
 
 console.log("NEXT_PUBLIC_SUPABASE_URL :", url ? "✓" : "✗ missing");
 console.log("ANON key                 :", anon ? "✓" : "✗ missing");
 console.log("SERVICE_ROLE key         :", service ? "✓" : "✗ missing");
-console.log("DATABASE_URL             :", db ? "✓" : "✗ missing (set Supabase Pooler URI)");
 console.log("APP_URL                  :", process.env.APP_URL || "✗ missing");
 
 if (url && service) {
@@ -37,16 +35,18 @@ if (url && service) {
     console.log("Auth listUsers          : ✓ total=" + data.total);
     for (const u of data.users.slice(0, 5)) console.log("  -", u.email);
   }
-}
 
-if (db) {
-  try {
-    const { PrismaClient } = await import("@prisma/client");
-    const p = new PrismaClient();
-    await p.$queryRaw`SELECT 1`;
-    console.log("Postgres connect        : ✓");
-    await p.$disconnect();
-  } catch (e) {
-    console.log("Postgres connect        : ✗", String(e.message).slice(0, 160));
-  }
+  const { data: orgs, error: orgErr } = await admin
+    .from("organizations")
+    .select("id, name, slug")
+    .limit(5);
+  if (orgErr) console.log("organizations table     :", "✗", orgErr.message);
+  else console.log("organizations table     : ✓ rows=" + (orgs?.length ?? 0));
+
+  const { data: users, error: uErr } = await admin
+    .from("users")
+    .select("id, email")
+    .limit(5);
+  if (uErr) console.log("users table             :", "✗", uErr.message);
+  else console.log("users table             : ✓ rows=" + (users?.length ?? 0));
 }

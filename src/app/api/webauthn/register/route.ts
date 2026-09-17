@@ -4,9 +4,8 @@ import {
   requireUser,
   allowedOrigins,
   expectedRpId,
-  createSession,
 } from "@/lib/auth";
-import { db, newId, nowIso, findUserById } from "@/lib/supabase/db";
+import { db, newId, nowIso } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import {
   generateRegistrationOptions,

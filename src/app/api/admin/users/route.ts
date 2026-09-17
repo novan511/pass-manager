@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireOrgAdmin, isSuperadmin } from "@/lib/auth";
-import { db, findUserById, updateUser, findOrgById } from "@/lib/supabase/db";
+import { db, findUserById, updateUser } from "@/lib/supabase/db";
 import { handleApiError } from "@/lib/api";
 import { categoriesToCsv, parseCategories } from "@/lib/categories";
 
@@ -115,13 +115,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const updated = await updateUser(target.id, patch);
-    if (body.status === "revoked") {
-      try {
-        await db().from("sessions").delete().eq("user_id", target.id);
-      } catch {
-        /* ignore */
-      }
-    }
+    // Supabase Auth sessions are revoked on password reset; status check blocks access.
 
     return NextResponse.json({
       user: {
