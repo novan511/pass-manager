@@ -19,10 +19,13 @@ export function handleApiError(err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
 
-  if (lower.includes("does not exist") && lower.includes("public.")) {
+  if (
+    (lower.includes("does not exist") || lower.includes("schema cache") || lower.includes("could not find the table")) &&
+    (lower.includes("public.") || lower.includes("organization_members") || lower.includes("supabase table"))
+  ) {
     return jsonError(
       500,
-      "Supabase tables missing. Run supabase/schema.sql in the Supabase SQL Editor, then try again.",
+      "Supabase tables missing. Run supabase/schema.sql (and organization_members migration) in the Supabase SQL Editor, then try again.",
     );
   }
   if (lower.includes("duplicate key") || lower.includes("unique constraint")) {
@@ -48,7 +51,6 @@ export function handleApiError(err: unknown) {
   }
 
   console.error(err);
-  // Surface a short technical hint so Vercel logs / users can diagnose.
-  const hint = msg.length > 180 ? msg.slice(0, 180) + "…" : msg;
-  return jsonError(500, `Something went wrong. ${hint}`);
+  const hint = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+  return jsonError(500, `Something went wrong. ${hint || "Check server logs."}`);
 }

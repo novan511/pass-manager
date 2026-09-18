@@ -128,9 +128,40 @@ export function VaultApp() {
   const [mobileNav, setMobileNav] = useState(false);
   const [scope, setScope] = useState<"personal" | "org">("personal");
   const [collapsed, setCollapsed] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [totpMap, setTotpMap] = useState<Record<string, { code: string; secondsRemaining: number }>>({});
+
+  // Labels always visible on mobile drawer; collapse only applies on desktop.
+  const showLabels = !collapsed || isMobile;
+  const railCollapsed = collapsed && !isMobile;
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 860px)");
+    const update = () => {
+      const m = mq.matches;
+      setIsMobile(m);
+      if (m) {
+        setCollapsed(false);
+        setShowProjects(false);
+      }
+    };
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+
+  // Close project menu on outside click
+  useEffect(() => {
+    if (!showProjects) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest?.("[data-project-switcher]")) setShowProjects(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [showProjects]);
 
   const canPasskeyUnlock = !!vault.profile?.passkeyPrfSalt && !!vault.profile?.wrappedDekPasskey;
   const allowed = vault.user?.allowedCategories ?? [];
@@ -236,15 +267,15 @@ export function VaultApp() {
   }));
 
   return (
-    <div className="app-shell" data-collapsed={collapsed ? "true" : undefined}>
+    <div className="app-shell" data-collapsed={railCollapsed ? "true" : undefined}>
       <aside
         className="sidebar"
         data-open={mobileNav || undefined}
-        data-collapsed={collapsed ? "true" : undefined}
-        style={mobileNav ? { display: "flex" } : undefined}
+        data-collapsed={railCollapsed ? "true" : undefined}
+        style={mobileNav && isMobile ? { display: "flex" } : undefined}
       >
         <div className="flex items-center gap-2 px-2 mb-3 font-semibold tracking-tight">
-          {!collapsed && (
+          {showLabels && (
             <>
               <span
                 className="inline-flex h-7 w-7 items-center justify-center rounded-lg shrink-0"
@@ -255,28 +286,36 @@ export function VaultApp() {
               Keyring
             </>
           )}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm ml-auto md:hidden"
-            aria-label="Minimize sidebar"
-            onClick={() => setMobileNav(false)}
-          >
-            <X size={16} />
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm ml-auto hidden md:inline-flex"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            onClick={() => setCollapsed((c) => !c)}
-            title={collapsed ? "Expand" : "Collapse"}
-          >
-            {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
-          </button>
+          {/* Mobile: only Close (X). Desktop: only Collapse («). Never both. */}
+          {isMobile ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm ml-auto"
+              aria-label="Close menu"
+              title="Close menu"
+              onClick={() => {
+                setMobileNav(false);
+                setShowProjects(false);
+              }}
+            >
+              <X size={18} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm ml-auto"
+              aria-label={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={() => setCollapsed((c) => !c)}
+            >
+              {railCollapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+            </button>
+          )}
         </div>
 
         {/* Project switcher (multi-membership) */}
         {vault.user?.memberships && vault.user.memberships.length > 0 && (
-          <div className="relative mb-3">
+          <div className="relative mb-3" data-project-switcher>
             <button
               type="button"
               className="btn btn-secondary btn-sm w-full justify-start gap-2"
@@ -285,13 +324,13 @@ export function VaultApp() {
               title={vault.user.organization?.name || "Switch project"}
             >
               <FolderKanban size={14} className="shrink-0" />
-              {!collapsed && (
+              {showLabels && (
                 <span className="truncate flex-1 text-left">
                   {switching ? "Switching…" : vault.user.organization?.name || "No project"}
                 </span>
               )}
             </button>
-            {showProjects && !collapsed && (
+            {showProjects && showLabels && (
               <div
                 className="absolute left-0 right-0 top-full z-20 mt-1 card p-1 shadow-lg"
                 style={{ minWidth: 220 }}
@@ -332,8 +371,9 @@ export function VaultApp() {
 
         <button
           type="button"
-          className={`btn btn-primary ${collapsed ? "px-0 w-10 justify-center" : "w-full"} mb-3`}
+          className={`btn btn-primary ${railCollapsed ? "px-0 w-10 justify-center" : "w-full"} mb-3`}
           aria-label="Add login"
+          title="Add login"
           onClick={() => {
             setFilter("all");
             setEditing("new");
@@ -341,10 +381,10 @@ export function VaultApp() {
           }}
         >
           <Plus size={16} />
-          {!collapsed && "Add login"}
+          {showLabels && "Add login"}
         </button>
 
-        {vault.user.organizationId && !collapsed && (
+        {vault.user.organizationId && showLabels && !railCollapsed && (
           <div className="mb-3 grid grid-cols-2 gap-1 p-1 rounded-xl" style={{ background: "var(--surface-2)" }}>
             <button
               type="button"
@@ -365,7 +405,7 @@ export function VaultApp() {
             </button>
           </div>
         )}
-        {vault.user.organizationId && collapsed && (
+        {vault.user.organizationId && railCollapsed && (
           <button
             type="button"
             className={`btn btn-sm w-10 justify-center mb-3 ${scope === "org" ? "btn-primary" : "btn-secondary"}`}
@@ -378,14 +418,14 @@ export function VaultApp() {
         )}
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto">
-          <button type="button" className="nav-item" data-active={filter === "all"} title={collapsed ? "All logins" : undefined} onClick={() => { setFilter("all"); setMobileNav(false); }}>
-            <LayoutGrid size={16} /> {!collapsed && "All logins"}
+          <button type="button" className="nav-item" data-active={filter === "all"} title={!showLabels ? "All logins" : undefined} onClick={() => { setFilter("all"); setMobileNav(false); }}>
+            <LayoutGrid size={16} /> {showLabels && "All logins"}
           </button>
-          <button type="button" className="nav-item" data-active={filter === "favorites"} title={collapsed ? "Favorites" : undefined} onClick={() => { setFilter("favorites"); setMobileNav(false); }}>
-            <Star size={16} /> {!collapsed && "Favorites"}
+          <button type="button" className="nav-item" data-active={filter === "favorites"} title={!showLabels ? "Favorites" : undefined} onClick={() => { setFilter("favorites"); setMobileNav(false); }}>
+            <Star size={16} /> {showLabels && "Favorites"}
           </button>
 
-          {!collapsed && (
+          {showLabels && (
             <p className="px-2 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--faint)" }}>
               Categories
             </p>
@@ -396,49 +436,49 @@ export function VaultApp() {
               type="button"
               className="nav-item"
               data-active={filter === item.id}
-              title={collapsed ? item.label : undefined}
+              title={!showLabels ? item.label : undefined}
               onClick={() => { setFilter(item.id); setMobileNav(false); }}
             >
               {item.icon}
-              {!collapsed && item.label}
+              {showLabels && item.label}
             </button>
           ))}
 
-          <button type="button" className="nav-item mt-2" data-active={filter === "generator"} title={collapsed ? "Generator" : undefined} onClick={() => { setFilter("generator"); setMobileNav(false); }}>
-            <Wand2 size={16} /> {!collapsed && "Generator"}
+          <button type="button" className="nav-item mt-2" data-active={filter === "generator"} title={!showLabels ? "Generator" : undefined} onClick={() => { setFilter("generator"); setMobileNav(false); }}>
+            <Wand2 size={16} /> {showLabels && "Generator"}
           </button>
         </nav>
 
         <div className="pt-3 mt-3 space-y-0.5 border-t hairline">
-          <button type="button" className="nav-item" data-active={filter === "settings"} title={collapsed ? "Settings" : undefined} onClick={() => { setFilter("settings"); setMobileNav(false); }}>
-            <Settings size={16} /> {!collapsed && "Settings"}
+          <button type="button" className="nav-item" data-active={filter === "settings"} title={!showLabels ? "Settings" : undefined} onClick={() => { setFilter("settings"); setMobileNav(false); }}>
+            <Settings size={16} /> {showLabels && "Settings"}
           </button>
           {(vault.user.role === "admin" ||
             vault.user.orgRole === "owner" ||
             vault.user.platformRole === "superadmin") && (
-            <button type="button" className="nav-item" data-active={filter === "admin"} title={collapsed ? (vault.user.platformRole === "superadmin" ? "Platform" : "Team admin") : undefined} onClick={() => { setFilter("admin"); setMobileNav(false); }}>
+            <button type="button" className="nav-item" data-active={filter === "admin"} title={!showLabels ? (vault.user.platformRole === "superadmin" ? "Platform" : "Team admin") : undefined} onClick={() => { setFilter("admin"); setMobileNav(false); }}>
               <Shield size={16} />
-              {!collapsed && (vault.user.platformRole === "superadmin" ? "Platform" : "Team")}
+              {showLabels && (vault.user.platformRole === "superadmin" ? "Platform" : "Team")}
             </button>
           )}
-          <button type="button" className="nav-item" title={collapsed ? "Lock vault" : undefined} onClick={() => { vault.lock(); setSelectedId(null); }}>
-            <Lock size={16} /> {!collapsed && "Lock vault"}
+          <button type="button" className="nav-item" title={!showLabels ? "Lock vault" : undefined} onClick={() => { vault.lock(); setSelectedId(null); }}>
+            <Lock size={16} /> {showLabels && "Lock vault"}
           </button>
           <button
             type="button"
             className="nav-item"
-            title={collapsed ? "Sign out" : undefined}
+            title={!showLabels ? "Sign out" : undefined}
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
               router.push("/login");
               router.refresh();
             }}
           >
-            <LogOut size={16} /> {!collapsed && "Sign out"}
+            <LogOut size={16} /> {showLabels && "Sign out"}
           </button>
         </div>
 
-        {!collapsed && (
+        {showLabels && (
           <div className="px-2 pt-3 mt-3 border-t hairline">
             <div className="flex items-center gap-2.5 min-w-0">
               {vault.user.avatar ? (

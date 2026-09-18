@@ -43,23 +43,25 @@ export async function POST(req: NextRequest) {
     const email = body.email.trim().toLowerCase();
 
     // Fail fast with a clear message if app tables were never created.
-    const { error: pingErr } = await db().from("organizations").select("id").limit(1);
-    if (pingErr) {
-      if (/does not exist/i.test(pingErr.message)) {
-        return NextResponse.json(
-          {
-            error:
-              "Supabase tables are missing. Open Supabase → SQL Editor → paste supabase/schema.sql → Run, then try signup again.",
-          },
-          { status: 500 },
-        );
+    const tables = ["organizations", "users", "organization_members"] as const;
+    for (const table of tables) {
+      const { error: pingErr } = await db().from(table).select("id").limit(1);
+      if (pingErr) {
+        if (/does not exist|schema cache|could not find/i.test(pingErr.message)) {
+          return NextResponse.json(
+            {
+              error: `Supabase table "${table}" is missing. Run supabase/schema.sql (and migrations/organization_members.sql) in the Supabase SQL Editor, then try again.`,
+            },
+            { status: 500 },
+          );
+        }
+        throw new Error(pingErr.message);
       }
-      throw new Error(pingErr.message);
     }
 
     if (await findUserByEmail(email)) {
       return NextResponse.json(
-        { error: "An account with this email already exists." },
+        { error: "An account with this email already exists. Try Sign in." },
         { status: 409 },
       );
     }
@@ -89,28 +91,59 @@ export async function POST(req: NextRequest) {
     });
     if (createErr || !created.user) {
       await db().from("organizations").delete().eq("id", org.id);
+      const msg = createErr?.message || "Could not create Supabase auth user.";
       return NextResponse.json(
-        { error: createErr?.message || "Could not create Supabase auth user." },
+        {
+          error: /already|exist/i.test(msg)
+            ? "This email already has a Supabase Auth account. Try Sign in."
+            : msg,
+        },
         { status: 400 },
       );
     }
 
-    const user = await createUser({
-      supabase_id: created.user.id,
-      email,
-      platform_role: isFirstUser ? "superadmin" : "user",
-      org_role: "owner",
-      role: "admin",
-      status: "active",
-      allowed_categories: ALL_CATEGORIES_CSV,
-      organization_id: org.id,
-    });
-    await addMembership({
-      organizationId: org.id,
-      userId: user.id,
-      orgRole: "owner",
-      allowedCategories: ALL_CATEGORIES_CSV,
-    });
+    let user;
+    try {
+      user = await createUser({
+        supabase_id: created.user.id,
+        email,
+        platform_role: isFirstUser ? "superadmin" : "user",
+        org_role: "owner",
+        role: "admin",
+        status: "active",
+        allowed_categories: ALL_CATEGORIES_CSV,
+        organization_id: org.id,
+      });
+    } catch (e) {
+      await admin.auth.admin.deleteUser(created.user.id).catch(() => {});
+      try {
+        await db().from("organizations").delete().eq("id", org.id);
+      } catch {
+        /* ignore cleanup */
+      }
+      throw e;
+    }
+
+    try {
+      await addMembership({
+        organizationId: org.id,
+        userId: user.id,
+        orgRole: "owner",
+        allowedCategories: ALL_CATEGORIES_CSV,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/does not exist|schema cache/i.test(msg)) {
+        return NextResponse.json(
+          {
+            error:
+              "Table organization_members is missing. Run supabase/migrations/20260917_organization_members.sql in Supabase SQL Editor, then try signup again.",
+          },
+          { status: 500 },
+        );
+      }
+      throw e;
+    }
 
     const supabase = await createSupabaseServerClient();
     const { error: signInErr } = await supabase.auth.signInWithPassword({

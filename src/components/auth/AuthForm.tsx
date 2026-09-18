@@ -41,8 +41,15 @@ export function AuthForm({ mode }: { mode: Mode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed.");
+      let data: { error?: string } = {};
+      try {
+        data = await res.json();
+      } catch {
+        /* non-JSON body */
+      }
+      if (!res.ok) {
+        throw new Error(data.error || `Request failed (HTTP ${res.status}).`);
+      }
       router.push("/vault");
       router.refresh();
     } catch (err) {

@@ -249,7 +249,7 @@ button {
 }
 
 .sidebar[data-collapsed="true"] {
-  width: 72px;
+  width: auto;
   padding-left: 0.5rem;
   padding-right: 0.5rem;
   align-items: center;
@@ -261,17 +261,13 @@ button {
   padding-right: 0.5rem;
 }
 
-.sidebar[data-collapsed="true"] .nav-item span,
-.sidebar[data-collapsed="true"] .nav-item:not(:has(svg)) {
-  /* labels are conditionally rendered — nothing extra needed */
-}
-
 @media (max-width: 860px) {
   .app-shell,
   .app-shell[data-collapsed="true"] {
     grid-template-columns: 1fr;
   }
-  .sidebar {
+  .sidebar,
+  .sidebar[data-collapsed="true"] {
     display: none;
     position: fixed;
     inset: 0 auto 0 0;
@@ -280,14 +276,10 @@ button {
     box-shadow: var(--shadow);
     align-items: stretch;
     padding: 1rem 0.75rem;
+    border-right: 1px solid var(--border);
   }
   .sidebar[data-open] {
     display: flex;
-  }
-  .sidebar[data-collapsed="true"] {
-    width: min(300px, 88vw);
-    padding: 1rem 0.75rem;
-    align-items: stretch;
   }
 }
 
