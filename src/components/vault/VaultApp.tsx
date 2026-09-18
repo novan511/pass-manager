@@ -531,7 +531,7 @@ export function VaultApp() {
       {mobileNav && (
         <div
           className="backdrop md:hidden"
-          onClick={() => setMobileNav(false)}
+          onClick={closeMobileNav}
           aria-hidden
         />
       )}
