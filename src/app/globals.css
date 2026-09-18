@@ -248,6 +248,20 @@ button {
   grid-template-columns: 72px 1fr;
 }
 
+/* Base sidebar — MUST come before mobile media queries */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0.75rem;
+  gap: 0.25rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
 .sidebar[data-collapsed="true"] {
   width: auto;
   padding-left: 0.5rem;
@@ -261,14 +275,16 @@ button {
   padding-right: 0.5rem;
 }
 
+/* Mobile drawer — media query LAST so display:none wins over base .sidebar */
 @media (max-width: 860px) {
   .app-shell,
   .app-shell[data-collapsed="true"] {
     grid-template-columns: 1fr;
   }
+
   .sidebar,
   .sidebar[data-collapsed="true"] {
-    display: none;
+    display: none !important;
     position: fixed;
     inset: 0 auto 0 0;
     width: min(300px, 88vw);
@@ -277,23 +293,18 @@ button {
     align-items: stretch;
     padding: 1rem 0.75rem;
     border-right: 1px solid var(--border);
+    height: 100dvh;
   }
-  .sidebar[data-open] {
-    display: flex;
-  }
-}
 
-.sidebar {
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 1rem 0.75rem;
-  gap: 0.25rem;
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  overflow-y: auto;
+  .sidebar[data-open] {
+    display: flex !important;
+  }
+
+  .sidebar[data-collapsed="true"] .nav-item {
+    justify-content: flex-start;
+    padding-left: 0.7rem;
+    padding-right: 0.7rem;
+  }
 }
 
 .nav-item {

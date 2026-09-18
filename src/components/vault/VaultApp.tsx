@@ -137,6 +137,12 @@ export function VaultApp() {
   const showLabels = !collapsed || isMobile;
   const railCollapsed = collapsed && !isMobile;
 
+  const closeMobileNav = () => {
+    setMobileNav(false);
+    setCollapsed(false);
+    setShowProjects(false);
+  };
+
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 860px)");
     const update = () => {
@@ -145,6 +151,8 @@ export function VaultApp() {
       if (m) {
         setCollapsed(false);
         setShowProjects(false);
+        // Drawer starts closed on breakpoint change
+        // (don't force-open; user controls via hamburger)
       }
     };
     update();
@@ -270,9 +278,8 @@ export function VaultApp() {
     <div className="app-shell" data-collapsed={railCollapsed ? "true" : undefined}>
       <aside
         className="sidebar"
-        data-open={mobileNav || undefined}
+        data-open={mobileNav ? "true" : undefined}
         data-collapsed={railCollapsed ? "true" : undefined}
-        style={mobileNav && isMobile ? { display: "flex" } : undefined}
       >
         <div className="flex items-center gap-2 px-2 mb-3 font-semibold tracking-tight">
           {showLabels && (
@@ -286,17 +293,14 @@ export function VaultApp() {
               Keyring
             </>
           )}
-          {/* Mobile: only Close (X). Desktop: only Collapse («). Never both. */}
+          {/* Mobile drawer: only Close (X). Desktop: only Collapse («). */}
           {isMobile ? (
             <button
               type="button"
               className="btn btn-ghost btn-sm ml-auto"
               aria-label="Close menu"
               title="Close menu"
-              onClick={() => {
-                setMobileNav(false);
-                setShowProjects(false);
-              }}
+              onClick={closeMobileNav}
             >
               <X size={18} />
             </button>
@@ -418,10 +422,10 @@ export function VaultApp() {
         )}
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto">
-          <button type="button" className="nav-item" data-active={filter === "all"} title={!showLabels ? "All logins" : undefined} onClick={() => { setFilter("all"); setMobileNav(false); }}>
+          <button type="button" className="nav-item" data-active={filter === "all"} title={!showLabels ? "All logins" : undefined} onClick={() => { setFilter("all"); closeMobileNav(); }}>
             <LayoutGrid size={16} /> {showLabels && "All logins"}
           </button>
-          <button type="button" className="nav-item" data-active={filter === "favorites"} title={!showLabels ? "Favorites" : undefined} onClick={() => { setFilter("favorites"); setMobileNav(false); }}>
+          <button type="button" className="nav-item" data-active={filter === "favorites"} title={!showLabels ? "Favorites" : undefined} onClick={() => { setFilter("favorites"); closeMobileNav(); }}>
             <Star size={16} /> {showLabels && "Favorites"}
           </button>
 
@@ -437,26 +441,26 @@ export function VaultApp() {
               className="nav-item"
               data-active={filter === item.id}
               title={!showLabels ? item.label : undefined}
-              onClick={() => { setFilter(item.id); setMobileNav(false); }}
+              onClick={() => { setFilter(item.id); closeMobileNav(); }}
             >
               {item.icon}
               {showLabels && item.label}
             </button>
           ))}
 
-          <button type="button" className="nav-item mt-2" data-active={filter === "generator"} title={!showLabels ? "Generator" : undefined} onClick={() => { setFilter("generator"); setMobileNav(false); }}>
+          <button type="button" className="nav-item mt-2" data-active={filter === "generator"} title={!showLabels ? "Generator" : undefined} onClick={() => { setFilter("generator"); closeMobileNav(); }}>
             <Wand2 size={16} /> {showLabels && "Generator"}
           </button>
         </nav>
 
         <div className="pt-3 mt-3 space-y-0.5 border-t hairline">
-          <button type="button" className="nav-item" data-active={filter === "settings"} title={!showLabels ? "Settings" : undefined} onClick={() => { setFilter("settings"); setMobileNav(false); }}>
+          <button type="button" className="nav-item" data-active={filter === "settings"} title={!showLabels ? "Settings" : undefined} onClick={() => { setFilter("settings"); closeMobileNav(); }}>
             <Settings size={16} /> {showLabels && "Settings"}
           </button>
           {(vault.user.role === "admin" ||
             vault.user.orgRole === "owner" ||
             vault.user.platformRole === "superadmin") && (
-            <button type="button" className="nav-item" data-active={filter === "admin"} title={!showLabels ? (vault.user.platformRole === "superadmin" ? "Platform" : "Team admin") : undefined} onClick={() => { setFilter("admin"); setMobileNav(false); }}>
+            <button type="button" className="nav-item" data-active={filter === "admin"} title={!showLabels ? (vault.user.platformRole === "superadmin" ? "Platform" : "Team admin") : undefined} onClick={() => { setFilter("admin"); closeMobileNav(); }}>
               <Shield size={16} />
               {showLabels && (vault.user.platformRole === "superadmin" ? "Platform" : "Team")}
             </button>
